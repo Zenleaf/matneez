@@ -1,0 +1,346 @@
+import React, { useState, useRef, useEffect } from 'react';
+import { useEditor, EditorContent } from '@tiptap/react';
+import StarterKit from '@tiptap/starter-kit';
+import Placeholder from '@tiptap/extension-placeholder';
+import { Extension } from '@tiptap/core';
+import { Plugin, PluginKey } from 'prosemirror-state';
+
+import MenuBar from './MenuBar';
+import '../editor.css'; // Import custom editor styles
+
+// Slash command menu component
+const SlashCommandMenu = ({ editor }) => {
+  if (!editor) return null;
+  
+  const [isVisible, setIsVisible] = useState(false);
+  const [position, setPosition] = useState({ top: 0, left: 0 });
+  const [query, setQuery] = useState('');
+  const [selectedIndex, setSelectedIndex] = useState(0);
+  const menuRef = useRef(null);
+  
+  // Available commands
+  const commands = [
+    { 
+      title: 'Heading 1', 
+      description: 'Large section heading',
+      icon: 'H1',
+      command: () => editor.chain().focus().toggleHeading({ level: 1 }).run() 
+    },
+    { 
+      title: 'Heading 2', 
+      description: 'Medium section heading',
+      icon: 'H2',
+      command: () => editor.chain().focus().toggleHeading({ level: 2 }).run() 
+    },
+    { 
+      title: 'Heading 3', 
+      description: 'Small section heading',
+      icon: 'H3',
+      command: () => editor.chain().focus().toggleHeading({ level: 3 }).run() 
+    },
+    { 
+      title: 'Bullet List', 
+      description: 'Create a simple bullet list',
+      icon: '•',
+      command: () => editor.chain().focus().toggleBulletList().run() 
+    },
+    { 
+      title: 'Numbered List', 
+      description: 'Create a numbered list',
+      icon: '1.',
+      command: () => editor.chain().focus().toggleOrderedList().run() 
+    },
+    { 
+      title: 'Quote', 
+      description: 'Create a blockquote',
+      icon: '❝',
+      command: () => editor.chain().focus().toggleBlockquote().run() 
+    },
+  ];
+  
+  // Filter commands based on query
+  const filteredCommands = commands.filter(cmd => 
+    cmd.title.toLowerCase().includes(query.toLowerCase()) ||
+    cmd.description.toLowerCase().includes(query.toLowerCase())
+  );
+  
+  // Handle key events for navigation
+  const handleKeyDown = (event) => {
+    if (!isVisible) return;
+    
+    switch (event.key) {
+      case 'ArrowDown':
+        event.preventDefault();
+        setSelectedIndex(prev => 
+          prev < filteredCommands.length - 1 ? prev + 1 : prev
+        );
+        break;
+      case 'ArrowUp':
+        event.preventDefault();
+        setSelectedIndex(prev => prev > 0 ? prev - 1 : 0);
+        break;
+      case 'Enter':
+        event.preventDefault();
+        if (filteredCommands[selectedIndex]) {
+          executeCommand(filteredCommands[selectedIndex]);
+        }
+        break;
+      case 'Escape':
+        event.preventDefault();
+        hideMenu();
+        break;
+      default:
+        break;
+    }
+  };
+  
+  // Execute a command and hide the menu
+  const executeCommand = (cmd) => {
+    // Delete the slash that triggered the menu
+    editor.commands.deleteRange({
+      from: editor.state.selection.from - 1 - query.length,
+      to: editor.state.selection.from
+    });
+    
+    // Execute the command
+    cmd.command();
+    hideMenu();
+  };
+  
+  // Hide the menu
+  const hideMenu = () => {
+    setIsVisible(false);
+    setQuery('');
+    setSelectedIndex(0);
+  };
+  
+  // Setup event listeners for slash key and text input
+  useEffect(() => {
+    if (!editor || !editor.view) return;
+    
+    // Function to check for slash and show menu
+    const handleSlashKey = () => {
+      const { state, view } = editor;
+      const { selection } = state;
+      const { empty, from } = selection;
+      
+      if (!empty) return false;
+      
+      // Get text before cursor in current node
+      const $from = selection.$from;
+      const textBefore = $from.parent.textContent.slice(0, $from.parentOffset);
+      
+      // Check if the last character is a slash
+      if (textBefore.endsWith('/')) {
+          // Get position using ProseMirror's coordsAtPos
+        const { view } = editor;
+        const { selection } = editor.state;
+        const { from } = selection;
+        const coords = view.coordsAtPos(from); // These are window-relative coordinates
+
+        // For fixed positioning, use viewport coordinates directly
+        // Add a small offset to position it nicely below the text line
+        setPosition({
+          top: coords.bottom + 2, // coords.bottom is viewport-relative
+          left: coords.left,      // coords.left is viewport-relative
+        });
+        
+        setIsVisible(true);
+        setQuery('');
+        return true;
+      }
+      
+      // Check if we're already showing the menu and update query
+      if (isVisible && textBefore.includes('/')) {
+        const slashIndex = textBefore.lastIndexOf('/');
+        const newQuery = textBefore.slice(slashIndex + 1);
+        setQuery(newQuery);
+        setSelectedIndex(0); // Reset selection when query changes
+        return true;
+      }
+      
+      return false;
+    };
+    
+    // Create a transaction handler
+    const handleTransaction = () => {
+      setTimeout(handleSlashKey, 0);
+    };
+    
+    // Add transaction handler
+    editor.on('transaction', handleTransaction);
+    
+    // Add keyboard event listener for navigation
+    document.addEventListener('keydown', handleKeyDown);
+    
+    // Add click outside listener to hide menu
+    const handleClickOutside = (event) => {
+      if (menuRef.current && !menuRef.current.contains(event.target)) {
+        hideMenu();
+      }
+    };
+    document.addEventListener('mousedown', handleClickOutside);
+    
+    return () => {
+      editor.off('transaction', handleTransaction);
+      document.removeEventListener('keydown', handleKeyDown);
+      document.removeEventListener('mousedown', handleClickOutside);
+    };
+  }, [editor, isVisible, query, selectedIndex]);
+  
+  if (!isVisible) return null;
+  
+  return (
+    <div
+      ref={menuRef}
+      style={{
+        position: 'fixed',
+        top: `${position.top}px`,
+        left: `${position.left}px`,
+        background: '#22272e',      // Consistent with editor.css .ProseMirror
+        border: '1px solid #30363d', // Consistent with editor.css .ProseMirror
+        borderRadius: '6px',
+        padding: '4px',
+        zIndex: 50,
+        minWidth: '220px',
+        boxShadow: '0 4px 12px rgba(0,0,0,0.25)',
+        color: '#c9d1d9',           // Consistent with editor.css .ProseMirror text
+        fontFamily: 'Inter, sans-serif',
+        boxSizing: 'border-box',
+      }}
+    >
+      <input
+        type="text"
+        value={query}
+        onChange={(e) => setQuery(e.target.value)}
+        placeholder="Search commands..."
+        style={{
+          width: '100%',
+          padding: '8px',
+          marginBottom: '4px',
+          background: '#1c2128',      // Editor background for input
+          border: '1px solid #30363d', // Editor border for input
+          color: '#c9d1d9',           // Editor text color for input
+          borderRadius: '4px',
+          boxSizing: 'border-box',
+        }}
+        autoFocus
+      />
+      {filteredCommands.length > 0 ? (
+        <div style={{ maxHeight: '300px', overflowY: 'auto' }}>
+          {filteredCommands.map((cmd, index) => (
+            <div
+              key={index}
+              onClick={() => executeCommand(cmd)}
+              style={{
+                padding: '8px 10px',
+                cursor: 'pointer',
+                borderRadius: '4px',
+                display: 'flex',
+                alignItems: 'center',
+                gap: '10px',
+                backgroundColor: index === selectedIndex ? '#373e47' : 'transparent', // Hover/selected bg
+              }}
+            >
+              <div style={{
+                background: '#373e47',      // Icon background
+                padding: '2px 6px',
+                borderRadius: '4px',
+                fontSize: '12px',
+                width: '20px',
+                height: '20px',
+                display: 'flex',
+                alignItems: 'center',
+                justifyContent: 'center',
+              }}>
+                {cmd.icon}
+              </div>
+              <div>
+                <div style={{ fontWeight: 500 }}>{cmd.title}</div>
+                <div style={{ fontSize: '12px', opacity: 0.7 }}>{cmd.description}</div>
+              </div>
+            </div>
+          ))}
+        </div>
+      ) : (
+        <div style={{ padding: '10px', textAlign: 'center', color: '#484f58' }}> {/* Placeholder color */}
+          No commands found
+        </div>
+      )}
+    </div>
+  );
+};
+
+// Extension to handle slash commands
+const SlashCommands = Extension.create({
+  name: 'slashCommands',
+  
+  addProseMirrorPlugins() {
+    return [
+      new Plugin({
+        key: new PluginKey('slashCommands'),
+      })
+    ];
+  },
+});
+
+export default function Editor() {
+  const [isEditModeActive, setIsEditModeActive] = useState(false);
+  // editorContainerRef is no longer strictly needed for fixed menu positioning
+  // but can be kept if other features might use it.
+  const editorContainerRef = useRef(null);
+
+  const editor = useEditor({
+    content: '<p></p>', // Empty content by default
+    extensions: [
+      StarterKit.configure({
+        heading: {
+          levels: [1, 2, 3],
+        },
+      }),
+      Placeholder.configure({
+        placeholder: 'Type / for commands or start typing...',
+      }),
+      SlashCommands,
+    ],
+  });
+
+  const handleDoubleClick = () => {
+    setIsEditModeActive(prev => !prev);
+  };
+
+  const handleBlur = () => {
+    setIsEditModeActive(false);
+  };
+
+  return (
+    <div
+      ref={editorContainerRef}
+      className="editor-container" 
+      style={{
+        flex: 1,
+        display: 'flex',
+        flexDirection: 'column',
+        position: 'relative', 
+        background: '#1c2128', 
+      }}
+      onDoubleClick={handleDoubleClick}
+      onBlur={handleBlur}
+      tabIndex={0} 
+    >
+      {/* MenuBar disabled as per user preference */}
+      <EditorContent 
+        editor={editor} 
+        style={{ 
+          flexGrow: 1, 
+          overflowY: 'auto',
+          padding: '1rem',
+          height: '100%',
+          outline: 'none'
+        }} 
+      />
+      <SlashCommandMenu editor={editor} />
+
+    </div>
+  );
+}

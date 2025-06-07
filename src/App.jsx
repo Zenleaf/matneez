@@ -4,6 +4,7 @@ import viteLogo from '/vite.svg';
 import './App.css';
 import Navbar from './components/Navbar';
 import Sidebar from './components/Sidebar';
+import Editor from './components/Editor';
 
 function App() {
   const [drawerOpen, setDrawerOpen] = useState(false);
@@ -14,28 +15,15 @@ function App() {
       <Navbar onBurgerClick={() => setDrawerOpen(true)} />
       <Sidebar open={drawerOpen} onClose={() => setDrawerOpen(false)} />
       {/* Main Content */}
-      <div style={{paddingTop: 56}}>
-
-        <div>
-          <a href="https://vite.dev" target="_blank">
-            <img src={viteLogo} className="logo" alt="Vite logo" />
-          </a>
-          <a href="https://react.dev" target="_blank">
-            <img src={reactLogo} className="logo react" alt="React logo" />
-          </a>
-        </div>
-        <h1>Vite + React</h1>
-        <div className="card">
-          <button onClick={() => setCount((count) => count + 1)}>
-            count is {count}
-          </button>
-          <p>
-            Edit <code>src/App.jsx</code> and save to test HMR
-          </p>
-        </div>
-        <p className="read-the-docs">
-          Click on the Vite and React logos to learn more
-        </p>
+      <div style={{
+        paddingTop: 56, // Account for the fixed navbar height
+        height: '100vh', // Make the container span the full viewport height
+        boxSizing: 'border-box', // Ensure paddingTop is included within the 100vh
+        background: '#1c2128', // Dark background for the main content area
+        display: 'flex', // Allow Editor to fill space
+        flexDirection: 'column'
+      }}>
+        <Editor />
       </div>
     </>
   )

@@ -1,0 +1,26 @@
+.menu-button {
+  background: transparent;
+  border: none;
+  color: #c9d1d9; /* Light gray for icons in dark mode */
+  padding: 0.4rem;
+  margin: 0 0.2rem;
+  cursor: pointer;
+  border-radius: 4px;
+  display: inline-flex; /* Align icons nicely */
+  align-items: center; /* Align icons nicely */
+  justify-content: center; /* Align icons nicely */
+}
+
+.menu-button:hover {
+  background-color: #30363d; /* Darker gray on hover */
+}
+
+.menu-button.is-active {
+  background-color: #0969da; /* Blue for active state */
+  color: white;
+}
+
+/* Ensure buttons don't have extra height/width from default browser styles */
+.menu-button svg {
+  vertical-align: middle; /* Helps with icon alignment */
+}
