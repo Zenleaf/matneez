@@ -1,0 +1,73 @@
+.sync-status {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  padding: 8px;
+  font-size: 12px;
+  background-color: rgba(28, 33, 40, 0.8);
+  backdrop-filter: blur(8px);
+  border-radius: 8px;
+  border: 1px solid #30363d;
+  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.25);
+}
+
+.sync-indicators {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.icon {
+  opacity: 0.7;
+}
+
+.icon.connected,
+.icon.active {
+  color: #4ade80;
+  opacity: 1;
+}
+
+.icon.disconnected,
+.icon.inactive {
+  color: #f87171;
+}
+
+.sync-button {
+  background: none;
+  border: none;
+  cursor: pointer;
+  padding: 4px;
+  border-radius: 4px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.sync-button:hover {
+  background-color: rgba(255, 255, 255, 0.1);
+}
+
+.sync-button:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+.icon.syncing {
+  animation: spin 1.5s linear infinite;
+}
+
+.last-synced {
+  margin-top: 4px;
+  font-size: 10px;
+  opacity: 0.7;
+  color: #c9d1d9;
+}
+
+@keyframes spin {
+  from {
+    transform: rotate(0deg);
+  }
+  to {
+    transform: rotate(360deg);
+  }
+}

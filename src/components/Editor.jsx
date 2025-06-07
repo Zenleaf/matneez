@@ -1,5 +1,5 @@
 import React, { useState, useRef, useEffect } from 'react';
-import { getNote, saveNote, createInitialNote } from '../services/pouchdbService.js';
+import { getNote, saveNote, createInitialNote, debouncedSync, syncNow } from '../services/database';
 
 const NOTE_ID = 'main_note'; // Using a fixed ID for the single note for now
 import { useEditor, EditorContent } from '@tiptap/react';
@@ -311,8 +311,26 @@ export default function Editor() {
 
       const htmlContent = editor.getHTML();
       try {
+        console.log('Editor: Saving note content...');
         const newRev = await saveNote(NOTE_ID, htmlContent, currentDocRev);
         setCurrentDocRev(newRev);
+        
+        // Always trigger immediate sync with live: true for real-time updates
+        console.log('Editor: Triggering immediate sync with live: true');
+        syncNow({
+          live: true,
+          retry: true
+        }).catch(syncErr => {
+          console.warn('Editor: Immediate sync failed:', syncErr);
+        });
+        
+        // Also trigger debounced sync as a backup
+        debouncedSync({
+          live: true,
+          retry: true
+        }).catch(syncErr => {
+          console.warn('Editor: Debounced sync failed:', syncErr);
+        });
       } catch (err) {
         console.error('Editor: Error saving note through service:', err);
         // Optionally, handle specific errors, e.g., show a notification to the user
@@ -328,41 +346,266 @@ export default function Editor() {
     setIsEditModeActive(false);
   };
 
-  // Effect for loading initial content from PouchDB
-  useEffect(() => {
-    if (!editor) return;
-
+  // Function to load note content
+  const loadNote = async () => {
     setIsLoading(true);
-    editor.setEditable(false);
-
-    const loadOrCreateNote = async () => {
-      try {
-        const note = await getNote(NOTE_ID);
-        editor.commands.setContent(note.content, false); // 'false' to not trigger onUpdate
+    try {
+      const note = await getNote(NOTE_ID);
+      
+      // If editor exists, update its content
+      if (editor) {
+        const currentSelection = editor.state.selection;
+        editor.commands.setContent(note.content, false);
+        // Try to restore cursor position
+        editor.commands.setTextSelection(currentSelection);
         setCurrentDocRev(note._rev);
-      } catch (err) {
-        if (err.name === 'not_found') {
-          console.log('Editor: Note not found, creating initial note...');
+      }
+    } catch (err) {
+      console.error('Editor: Error loading note:', err);
+      if (err.name === 'not_found') {
+        console.log('Editor: Note not found, creating initial note');
+        try {
           const initialContent = '<p></p>';
           editor.commands.setContent(initialContent, false);
+          const newRev = await createInitialNote(NOTE_ID, initialContent);
+          setCurrentDocRev(newRev);
+        } catch (createErr) {
+          console.error('Editor: Error creating initial note:', createErr);
+        }
+      }
+    } finally {
+      setIsLoading(false);
+      if (editor) {
+        editor.setEditable(true);
+      }
+    }
+  };
+
+  // Effect to initialize the editor and load the note
+  useEffect(() => {
+    if (!editor) return;
+    
+    editor.setEditable(false);
+    loadNote(); // Load the note when editor is initialized
+  }, [editor]); // Runs once when editor is initialized
+
+  // Effect to listen for local database changes (this is the key to real-time sync)
+  useEffect(() => {
+    if (!editor) return;
+    
+    // Handler for local database changes - this catches ALL changes to the note
+    // including those from sync with other devices
+    const handleLocalChange = async (event) => {
+      try {
+        const { change, timestamp } = event.detail || {};
+        if (!change || !change.doc || change.doc._id !== NOTE_ID) return;
+
+        console.log(`Editor: 📝 Local change detected at ${timestamp}`, { id: change.doc._id, rev: change.doc._rev });
+
+        // Compare content; only update if different to avoid cursor jumps
+        const newContent = change.doc.content;
+        const currentContent = editor.getHTML();
+        
+        if (currentContent !== newContent) {
+          console.log('Editor: Content changed, updating editor...');
+          
+          // Save current cursor and scroll position
+          const currentSelection = editor.state.selection;
+          const scrollPosition = window.scrollY;
+          
+          // Update editor content
+          editor.commands.setContent(newContent, false);
+          setCurrentDocRev(change.doc._rev);
+          
+          // Dispatch an event to notify other components
+          const updatedEvent = new CustomEvent('note-updated', { 
+            detail: { noteId: NOTE_ID, source: 'change', newRev: change.doc._rev } 
+          });
+          window.dispatchEvent(updatedEvent);
+          
+          // Try to restore cursor position and scroll position
           try {
-            const newRev = await createInitialNote(NOTE_ID, initialContent);
-            setCurrentDocRev(newRev);
-          } catch (createErr) {
-            console.error('Editor: Error creating initial note through service:', createErr);
+            if (currentSelection && editor && editor.state && editor.commands) {
+              // Ensure editor is in a valid state to apply selection
+              if (editor.state.doc.content.size > 0) { 
+                editor.commands.setTextSelection(currentSelection);
+              }
+            }
+            window.scrollTo(0, scrollPosition);
+          } catch (posErr) {
+            console.warn('Editor: Could not restore cursor position:', posErr);
           }
         } else {
-          console.error('Editor: Error loading note through service:', err);
+          console.log('Editor: Content unchanged, no update needed');
         }
+      } catch (err) {
+        console.error('Editor: Error handling local change:', err);
       }
     };
 
-    loadOrCreateNote().finally(() => {
-      setIsLoading(false);
-      editor.setEditable(true);
-    });
-  }, [editor]); // Runs once when editor is initialized
+    // Listen for ALL local database changes
+    window.addEventListener('pouchdb-local-change', handleLocalChange);
+    
+    return () => {
+      window.removeEventListener('pouchdb-local-change', handleLocalChange);
+    };
+  }, [editor]);
 
+  // We still listen for sync events for debugging and status updates
+  useEffect(() => {
+    if (!editor) return;
+    
+    const handleSyncChange = (event) => {
+      try {
+        const { direction, change, timestamp } = event.detail || {};
+        if (!change) return;
+        
+        console.log(`Editor: 📡 Sync ${direction} event at ${timestamp}`, { 
+          direction, 
+          docs: change.docs ? change.docs.map(d => d._id) : 'no docs' 
+        });
+      } catch (err) {
+        console.error('Editor: Error handling sync event:', err);
+      }
+    };
+    
+    window.addEventListener('pouchdb-sync-change', handleSyncChange);
+    
+    return () => {
+      window.removeEventListener('pouchdb-sync-change', handleSyncChange);
+    };
+  }, [editor]);
+
+  // Effect to listen for sync events and local database changes
+  useEffect(() => {
+    if (!editor) return;
+    
+    // Handler for sync change events
+    const handleSyncChange = async (event) => {
+      try {
+        const { direction, change, timestamp } = event.detail || {};
+        
+        if (!change) {
+          console.log('Editor: Sync event received with no change data', event.detail);
+          return;
+        }
+        
+        console.log(`Editor: 📡 Sync change event at ${timestamp}`, { direction, change });
+        
+        // Skip if this is our own change (pushed to remote)
+        if (direction === 'push') {
+          console.log('Editor: Ignoring push event (own change).');
+          return;
+        }
+        
+        // If the current note was changed remotely, reload it
+        if (direction === 'pull' && change.docs) {
+          const currentNoteDoc = change.docs.find(doc => doc._id === NOTE_ID);
+          if (currentNoteDoc) {
+            console.log('Editor: 📡 Current note changed remotely, reloading...', { noteId: NOTE_ID, newRev: currentNoteDoc._rev });
+            
+            // Save current cursor and scroll position
+            const currentSelection = editor.state.selection;
+            const scrollPosition = window.scrollY;
+            
+            // Reload the note
+            await loadNote(); // loadNote will update editor content and currentDocRev
+            
+            console.log('Editor: Note reloaded. Current rev:', currentDocRev, 'New rev from sync:', currentNoteDoc._rev);
+
+            // Dispatch an event to notify other components
+            const updatedEvent = new CustomEvent('note-updated', { 
+              detail: { noteId: NOTE_ID, source: 'remote', newRev: currentNoteDoc._rev } 
+            });
+            window.dispatchEvent(updatedEvent);
+            
+            // Try to restore cursor position and scroll position
+            try {
+              if (currentSelection && editor && editor.state && editor.commands) {
+                 // Ensure editor is in a valid state to apply selection
+                if (editor.state.doc.content.size > 0) { 
+                  editor.commands.setTextSelection(currentSelection);
+                }
+              }
+              window.scrollTo(0, scrollPosition);
+              console.log('Editor: Cursor and scroll position restored.');
+            } catch (posErr) {
+              console.warn('Editor: Could not restore cursor position:', posErr);
+            }
+          } else {
+            console.log('Editor: Pull event, but not for the current note.');
+          }
+        } else {
+          console.log('Editor: Sync event not a pull or no docs.', { direction, docs: change.docs });
+        }
+      } catch (err) {
+        console.error('Editor: Error handling sync change:', err);
+      }
+    };
+    
+    // Handler for local database changes
+    const handleLocalChange = async (event) => {
+      try {
+        const { change } = event.detail;
+        
+        // Skip changes that we initiated (those will be handled by the editor directly)
+        // We're only interested in changes that came from sync
+        if (change && change.doc && change.doc._id === NOTE_ID) {
+          // Check if this change came from another source (like sync)
+          // by comparing the current editor content with the new content
+          const currentContent = editor.getHTML();
+          const newContent = change.doc.content;
+          
+          if (currentContent !== newContent) {
+            console.log('%c Editor: Note changed in local DB, reloading content', 'background: #e67e22; color: white; padding: 2px 5px; border-radius: 3px;');
+            
+            // Save current cursor position
+            const currentSelection = editor.state.selection;
+            const scrollPosition = window.scrollY;
+            
+            // Update editor content
+            editor.commands.setContent(newContent, false);
+            setCurrentDocRev(change.doc._rev);
+            
+            // Try to restore cursor position and scroll position
+            try {
+              editor.commands.setTextSelection(currentSelection);
+              window.scrollTo(0, scrollPosition);
+            } catch (posErr) {
+              console.warn('Could not restore cursor position:', posErr);
+            }
+          }
+        }
+      } catch (err) {
+        console.error('Error handling local change:', err);
+      }
+    };
+    
+    // Add event listeners for all sync events
+    window.addEventListener('pouchdb-sync-change', handleSyncChange);
+    window.addEventListener('pouchdb-local-change', handleLocalChange);
+    
+    // Log when sync events are received
+    const logSyncEvent = (event) => {
+      console.log(`Sync event received: ${event.type}`, event.detail);
+    };
+    
+    window.addEventListener('pouchdb-sync-active', logSyncEvent);
+    window.addEventListener('pouchdb-sync-paused', logSyncEvent);
+    window.addEventListener('pouchdb-sync-complete', logSyncEvent);
+    window.addEventListener('pouchdb-sync-error', logSyncEvent);
+    
+    // Clean up event listeners
+    return () => {
+      window.removeEventListener('pouchdb-sync-change', handleSyncChange);
+      window.removeEventListener('pouchdb-local-change', handleLocalChange);
+      window.removeEventListener('pouchdb-sync-active', logSyncEvent);
+      window.removeEventListener('pouchdb-sync-paused', logSyncEvent);
+      window.removeEventListener('pouchdb-sync-complete', logSyncEvent);
+      window.removeEventListener('pouchdb-sync-error', logSyncEvent);
+    };
+  }, [editor]); // eslint-disable-line react-hooks/exhaustive-deps
+  
   // Effect to update placeholder text based on loading state
   useEffect(() => {
     if (editor && editor.extensionManager.extensions.find(ext => ext.name === 'placeholder')) {
