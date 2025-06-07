@@ -1,4 +1,7 @@
 import React, { useState, useRef, useEffect } from 'react';
+import { getNote, saveNote, createInitialNote } from '../services/pouchdbService.js';
+
+const NOTE_ID = 'main_note'; // Using a fixed ID for the single note for now
 import { useEditor, EditorContent } from '@tiptap/react';
 import StarterKit from '@tiptap/starter-kit';
 import Placeholder from '@tiptap/extension-placeholder';
@@ -96,7 +99,7 @@ const SlashCommandMenu = ({ editor }) => {
   
   // Execute a command and hide the menu
   const executeCommand = (cmd) => {
-    // Delete the slash that triggered the menu
+    // Delete the backslash that triggered the menu
     editor.commands.deleteRange({
       from: editor.state.selection.from - 1 - query.length,
       to: editor.state.selection.from
@@ -130,8 +133,8 @@ const SlashCommandMenu = ({ editor }) => {
       const $from = selection.$from;
       const textBefore = $from.parent.textContent.slice(0, $from.parentOffset);
       
-      // Check if the last character is a slash
-      if (textBefore.endsWith('/')) {
+      // Check if the last character is a backslash
+      if (textBefore.endsWith('\\')) {
           // Get position using ProseMirror's coordsAtPos
         const { view } = editor;
         const { selection } = editor.state;
@@ -151,9 +154,9 @@ const SlashCommandMenu = ({ editor }) => {
       }
       
       // Check if we're already showing the menu and update query
-      if (isVisible && textBefore.includes('/')) {
-        const slashIndex = textBefore.lastIndexOf('/');
-        const newQuery = textBefore.slice(slashIndex + 1);
+      if (isVisible && textBefore.includes('\\')) {
+        const backslashIndex = textBefore.lastIndexOf('\\');
+        const newQuery = textBefore.slice(backslashIndex + 1);
         setQuery(newQuery);
         setSelectedIndex(0); // Reset selection when query changes
         return true;
@@ -286,12 +289,11 @@ const SlashCommands = Extension.create({
 
 export default function Editor() {
   const [isEditModeActive, setIsEditModeActive] = useState(false);
-  // editorContainerRef is no longer strictly needed for fixed menu positioning
-  // but can be kept if other features might use it.
   const editorContainerRef = useRef(null);
+  const [currentDocRev, setCurrentDocRev] = useState(null);
+  const [isLoading, setIsLoading] = useState(true);
 
   const editor = useEditor({
-    content: '<p></p>', // Empty content by default
     extensions: [
       StarterKit.configure({
         heading: {
@@ -299,10 +301,23 @@ export default function Editor() {
         },
       }),
       Placeholder.configure({
-        placeholder: 'Type / for commands or start typing...',
+        placeholder: isLoading ? 'Loading note...' : 'Type \\ for commands or start typing...', // Updated placeholder
       }),
       SlashCommands,
     ],
+    content: '', // Content will be loaded from PouchDB
+    onUpdate: async ({ editor }) => {
+      if (isLoading || !editor.isEditable) return;
+
+      const htmlContent = editor.getHTML();
+      try {
+        const newRev = await saveNote(NOTE_ID, htmlContent, currentDocRev);
+        setCurrentDocRev(newRev);
+      } catch (err) {
+        console.error('Editor: Error saving note through service:', err);
+        // Optionally, handle specific errors, e.g., show a notification to the user
+      }
+    },
   });
 
   const handleDoubleClick = () => {
@@ -312,6 +327,55 @@ export default function Editor() {
   const handleBlur = () => {
     setIsEditModeActive(false);
   };
+
+  // Effect for loading initial content from PouchDB
+  useEffect(() => {
+    if (!editor) return;
+
+    setIsLoading(true);
+    editor.setEditable(false);
+
+    const loadOrCreateNote = async () => {
+      try {
+        const note = await getNote(NOTE_ID);
+        editor.commands.setContent(note.content, false); // 'false' to not trigger onUpdate
+        setCurrentDocRev(note._rev);
+      } catch (err) {
+        if (err.name === 'not_found') {
+          console.log('Editor: Note not found, creating initial note...');
+          const initialContent = '<p></p>';
+          editor.commands.setContent(initialContent, false);
+          try {
+            const newRev = await createInitialNote(NOTE_ID, initialContent);
+            setCurrentDocRev(newRev);
+          } catch (createErr) {
+            console.error('Editor: Error creating initial note through service:', createErr);
+          }
+        } else {
+          console.error('Editor: Error loading note through service:', err);
+        }
+      }
+    };
+
+    loadOrCreateNote().finally(() => {
+      setIsLoading(false);
+      editor.setEditable(true);
+    });
+  }, [editor]); // Runs once when editor is initialized
+
+  // Effect to update placeholder text based on loading state
+  useEffect(() => {
+    if (editor && editor.extensionManager.extensions.find(ext => ext.name === 'placeholder')) {
+      const placeholderExtension = editor.extensionManager.extensions.find(ext => ext.name === 'placeholder');
+      placeholderExtension.options.placeholder = isLoading
+        ? 'Loading note...'
+        : 'Type / for commands or start typing...';
+      // Trigger a view update to refresh the placeholder
+      if (editor.view.docView) { // Check if docView exists to prevent errors on unmount
+         editor.view.dispatch(editor.state.tr);
+      }
+    }
+  }, [editor, isLoading]);
 
   return (
     <div

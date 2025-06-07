@@ -8,6 +8,23 @@ export default defineConfig({
     react(),
     VitePWA({
       registerType: 'autoUpdate',
+      workbox: {
+        globPatterns: ['**/*.{js,css,html,ico,png,svg}'],
+        // Cache the CDN resources
+        runtimeCaching: [
+          {
+            urlPattern: /^https:\/\/cdn\.jsdelivr\.net\/npm\/pouchdb/,
+            handler: 'CacheFirst',
+            options: {
+              cacheName: 'pouchdb-cdn',
+              expiration: {
+                maxEntries: 10,
+                maxAgeSeconds: 60 * 60 * 24 * 30, // 30 days
+              },
+            },
+          },
+        ],
+      },
       manifest: {
         name: 'Cogneez',
         short_name: 'Cogneez',
@@ -31,4 +48,12 @@ export default defineConfig({
       },
     }),
   ],
+  optimizeDeps: {
+    exclude: ['pouchdb']
+  },
+  build: {
+    commonjsOptions: {
+      include: [/node_modules/],
+    }
+  },
 })
