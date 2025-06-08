@@ -41,6 +41,21 @@ const App: React.FC = () => {
   const [drawerOpen, setDrawerOpen] = useState(false);
   const [notes, setNotes] = useState<NoteDocument[]>([]);
   const [selectedNoteId, setSelectedNoteId] = useState<string | null>(null);
+  const [hoveredNoteId, setHoveredNoteId] = useState<string | null>(null);
+  const [isTouchDevice, setIsTouchDevice] = useState<boolean>(false);
+  
+  // Detect touch device on first interaction
+  useEffect(() => {
+    const handleTouchStart = () => {
+      setIsTouchDevice(true);
+      document.removeEventListener('touchstart', handleTouchStart);
+    };
+    
+    document.addEventListener('touchstart', handleTouchStart);
+    return () => {
+      document.removeEventListener('touchstart', handleTouchStart);
+    };
+  }, []);
   const [currentNoteTitle, setCurrentNoteTitle] = useState<string>('Cogneez');
   const [appState, setAppState] = useState<AppState>({
     initialized: false,
@@ -351,14 +366,38 @@ const App: React.FC = () => {
                         return null; 
                       },
                       (note) => { 
-                        setSelectedNoteId(note._id); 
+                        // Set the selected note ID
+                        setSelectedNoteId(note._id);
+                        
+                        // Update the notes list immediately with the new note
+                        // This ensures the new note appears in the list before we close the sidebar
+                        setNotes(prevNotes => {
+                          // Create a properly typed note document
+                          const newNote: NoteDocument = {
+                            ...note,
+                            title: 'New Note',
+                            content: '',
+                            type: 'note' as 'note', // Explicitly type as literal 'note'
+                            createdAt: new Date().toISOString(),
+                            updatedAt: new Date().toISOString()
+                          };
+                          return [newNote, ...prevNotes];
+                        });
+                        
+                        // Update the current note title
+                        setCurrentNoteTitle('New Note');
+                        
+                        // Always close the drawer when creating a new note
+                        setDrawerOpen(false);
+                        
+                        // Dispatch an event to notify the editor to load the new note
+                        const event = new Event('cogneez:doc:change');
+                        document.dispatchEvent(event);
+                        
                         return note; 
                       }
                     )
                   )();
-                }
-                if (window.innerWidth < 768) { 
-                  setDrawerOpen(false); 
                 }
               }}
               className="new-note-btn"
@@ -383,8 +422,43 @@ const App: React.FC = () => {
                     // Close drawer on all devices
                     setDrawerOpen(false);
                   }}
+                  onMouseEnter={() => !isTouchDevice && setHoveredNoteId(note._id)}
+                  onMouseLeave={() => !isTouchDevice && setHoveredNoteId(null)}
                 >
-                  {note.title || 'Untitled Note'}
+                  <div className="note-item-content">
+                    {note.title || 'Untitled Note'}
+                  </div>
+                  {/* Render delete button when selected or hovered (on non-touch devices) */}
+                  {(isSelected || (!isTouchDevice && hoveredNoteId === note._id)) && (
+                    <button 
+                      className="delete-note-btn"
+                      onClick={(e) => {
+                      e.stopPropagation();
+                      if (notesService && window.confirm('Are you sure you want to delete this note?')) {
+                        pipe(
+                          notesService.remove(String(note._id)),
+                          TE.match(
+                            (error) => { 
+                              console.error('Failed to delete note:', error); 
+                              return null; 
+                            },
+                            () => {
+                              // Note was deleted successfully
+                              setSelectedNoteId(null);
+                              return null;
+                            }
+                          )
+                        )();
+                      }
+                    }}
+                    aria-label="Delete note"
+                  >
+                    <svg xmlns="http://www.w3.org/2000/svg" width="12" height="12" fill="currentColor" viewBox="0 0 16 16">
+                      <path d="M5.5 5.5A.5.5 0 0 1 6 6v6a.5.5 0 0 1-1 0V6a.5.5 0 0 1 .5-.5zm2.5 0a.5.5 0 0 1 .5.5v6a.5.5 0 0 1-1 0V6a.5.5 0 0 1 .5-.5zm3 .5a.5.5 0 0 0-1 0v6a.5.5 0 0 0 1 0V6z"/>
+                      <path fillRule="evenodd" d="M14.5 3a1 1 0 0 1-1 1H13v9a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V4h-.5a1 1 0 0 1-1-1V2a1 1 0 0 1 1-1H6a1 1 0 0 1 1-1h2a1 1 0 0 1 1 1h3.5a1 1 0 0 1 1 1v1zM4.118 4 4 4.059V13a1 1 0 0 0 1 1h6a1 1 0 0 0 1-1V4.059L11.882 4H4.118zM2.5 3V2h11v1h-11z"/>
+                    </svg>
+                  </button>
+                  )}
                 </div>
               );
             })}
