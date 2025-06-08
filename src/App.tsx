@@ -3,6 +3,7 @@ import './App.css';
 import * as E from 'fp-ts/Either';
 import * as TE from 'fp-ts/TaskEither';
 import { pipe } from 'fp-ts/function';
+import { extractTitleFromContent } from './utils/noteUtils';
 
 // Components
 import Navbar from './components/Navbar';
@@ -40,6 +41,7 @@ const App: React.FC = () => {
   const [drawerOpen, setDrawerOpen] = useState(false);
   const [notes, setNotes] = useState<NoteDocument[]>([]);
   const [selectedNoteId, setSelectedNoteId] = useState<string | null>(null);
+  const [currentNoteTitle, setCurrentNoteTitle] = useState<string>('Cogneez');
   const [appState, setAppState] = useState<AppState>({
     initialized: false,
     error: null,
@@ -52,7 +54,60 @@ const App: React.FC = () => {
       syncActive: false
     }
   });
+  
+  // Track if notes have been loaded
+  const [notesLoaded, setNotesLoaded] = useState(false);
 
+  // Listen for title updates from the Editor component
+  useEffect(() => {
+    const handleTitleChange = (event: Event) => {
+      const customEvent = event as CustomEvent;
+      if (customEvent.detail && customEvent.detail.noteId === selectedNoteId) {
+        setCurrentNoteTitle(customEvent.detail.title || 'Untitled Note');
+      }
+    };
+    
+    document.addEventListener('cogneez:note:title', handleTitleChange);
+    
+    return () => {
+      document.removeEventListener('cogneez:note:title', handleTitleChange);
+    };
+  }, [selectedNoteId]);
+  
+  // Effect to update selected note when notes change
+  useEffect(() => {
+    console.log('Effect running with selectedNoteId:', selectedNoteId);
+    console.log('Notes count:', notes.length);
+    
+    if (selectedNoteId && notes.length > 0) {
+      // Check if the selected note still exists
+      const noteExists = notes.some(note => String(note._id) === String(selectedNoteId));
+      console.log('Selected note exists in list:', noteExists);
+      
+      if (!noteExists) {
+        // If not, select the first note
+        console.log('Selecting first note as fallback:', notes[0]._id);
+        setSelectedNoteId(String(notes[0]._id));
+        // Update current note title
+        setCurrentNoteTitle(notes[0].title || 'Untitled Note');
+      } else {
+        // Find the selected note and update the title
+        const selectedNote = notes.find(note => String(note._id) === String(selectedNoteId));
+        if (selectedNote) {
+          console.log('Found selected note, updating title:', selectedNote.title);
+          setCurrentNoteTitle(selectedNote.title || 'Untitled Note');
+        }
+      }
+    } else if (!selectedNoteId && notes.length > 0) {
+      // If no note is selected but we have notes, select the first one
+      console.log('No note selected, selecting first note:', notes[0]._id);
+      setSelectedNoteId(String(notes[0]._id));
+      // Update current note title
+      setCurrentNoteTitle(notes[0].title || 'Untitled Note');
+    }
+  }, [notes, selectedNoteId]);
+  
+  
   // Load notes and subscribe to changes
   useEffect(() => {
     const { notesService } = appState;
@@ -62,18 +117,43 @@ const App: React.FC = () => {
       try {
         const result = await notesService.list()();
         if (E.isRight(result)) {
-          const loadedNotes = result.right;
+          // Process notes to ensure titles are extracted from content if not already set
+          const loadedNotes = result.right.map((note: NoteDocument) => {
+            if (!note.title && note.content) {
+              // If note has no title but has content, extract title from content
+              try {
+                const content = typeof note.content === 'string' ? 
+                  JSON.parse(note.content) : note.content;
+                const extractedTitle = extractTitleFromContent(content);
+                return { ...note, title: extractedTitle };
+              } catch (e) {
+                // If parsing fails, just return the original note
+                return note;
+              }
+            }
+            return note;
+          });
+          
           setNotes(loadedNotes);
           
           // If no note is selected but we have notes, select the first one
           if (!selectedNoteId && loadedNotes.length > 0) {
-            setSelectedNoteId(loadedNotes[0]._id);
+            console.log('Setting initial selected note ID:', loadedNotes[0]._id);
+            setSelectedNoteId(String(loadedNotes[0]._id));
           }
+          
+          // Mark notes as loaded
+          setNotesLoaded(true);
         } else {
           console.error('Failed to load notes:', result.left);
+          // Even if there's an error, we should still mark notes as "loaded"
+          // to prevent infinite loading state
+          setNotesLoaded(true);
         }
       } catch (error) {
         console.error('Error loading notes:', error);
+        // Even in case of exception, mark notes as loaded
+        setNotesLoaded(true);
       }
     };
     
@@ -208,8 +288,28 @@ const App: React.FC = () => {
 
   const { initialized, error, dbStatus, db, notesService, syncService } = appState;
 
-  if (!initialized) {
-    return <div>Loading...</div>;
+  // Show loading screen until both initialization and note loading are complete
+  if (!initialized || !notesLoaded) {
+    // Enhanced loading state that matches the app's design
+    return (
+      <div style={{
+        position: 'fixed',
+        top: 0,
+        left: 0,
+        right: 0,
+        bottom: 0,
+        backgroundColor: '#1c2128',
+        display: 'flex',
+        flexDirection: 'column',
+        justifyContent: 'center',
+        alignItems: 'center',
+        zIndex: 9999,
+        color: '#c9d1d9'
+      }}>
+        <h1 className="text-2xl font-bold mb-4">Cogneez</h1>
+        <div className="text-center">{initialized ? 'Loading notes...' : 'Initializing...'}</div>
+      </div>
+    );
   }
 
   if (error) {
@@ -224,89 +324,107 @@ const App: React.FC = () => {
 
   return (
     <>
-      <Navbar onBurgerClick={() => setDrawerOpen(true)} />
-      <Sidebar 
-        open={drawerOpen} 
-        onClose={() => setDrawerOpen(false)}
-      >
-        {/* Sidebar internal content structure */}
-        <div className="sidebar-content p-4 h-full overflow-y-auto bg-gray-900">
-          <h2 className="text-xl font-semibold mb-4 text-gray-200">Notes</h2>
-          <button 
+      <Navbar 
+        onBurgerClick={() => setDrawerOpen(true)} 
+        selectedNoteId={selectedNoteId} 
+        noteTitle={currentNoteTitle} 
+      />
+      
+      <Sidebar open={drawerOpen} onClose={() => setDrawerOpen(false)}>
+        <div className="sidebar-header">
+          <h2>Notes</h2>
+          <button
             onClick={() => {
               if (appState.notesService) {
                 pipe(
                   appState.notesService.create({
                     title: 'New Note',
-                    content: '', // Editor handles JSON
+                    content: '',
                     type: 'note',
                     createdAt: new Date().toISOString(),
                     updatedAt: new Date().toISOString(),
                   }),
                   TE.match(
-                    (error) => { console.error('Failed to create note:', error); return null; },
-                    (note) => { setSelectedNoteId(note._id); return note; }
+                    (error) => { 
+                      console.error('Failed to create note:', error); 
+                      return null; 
+                    },
+                    (note) => { 
+                      setSelectedNoteId(note._id); 
+                      return note; 
+                    }
                   )
                 )();
               }
+              if (window.innerWidth < 768) { 
+                setDrawerOpen(false); 
+              }
             }}
-            className="new-note-button w-full bg-blue-600 hover:bg-blue-700 text-white font-semibold py-2 px-4 rounded mb-4 transition duration-150"
+            className="new-note-btn"
+            aria-label="New note"
           >
-            + New Note
+            <svg xmlns="http://www.w3.org/2000/svg" className="h-5 w-5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 4v16m8-8H4" />
+            </svg>
           </button>
-          <div className="notes-list space-y-2">
-            {notes.map(note => (
+        </div>
+        
+        <div className="notes-list">
+          {notes.map(note => {
+            const isSelected = String(selectedNoteId) === String(note._id);
+            
+            return (
               <div 
                 key={note._id} 
-                className={`note-item p-3 rounded-lg cursor-pointer transition duration-150 ${selectedNoteId === note._id ? 'bg-blue-500' : 'hover:bg-gray-700 bg-gray-800'}`}
+                className={`note-item ${isSelected ? 'selected' : ''}`}
                 onClick={() => {
-                  setSelectedNoteId(note._id);
-                  if (window.innerWidth < 768) { setDrawerOpen(false); }
+                  setSelectedNoteId(String(note._id));
+                  if (window.innerWidth < 768) { 
+                    setDrawerOpen(false); 
+                  }
                 }}
               >
-                <h3 className={`font-semibold truncate ${selectedNoteId === note._id ? 'text-white' : 'text-gray-300'}`}>{note.title || 'Untitled Note'}</h3>
-                <p className={`text-sm truncate ${selectedNoteId === note._id ? 'text-blue-100' : 'text-gray-500'}`}>
+                <div className="note-title">{note.title || 'Untitled Note'}</div>
+                <div className="note-preview">
                   {note.content ? 
                     (typeof note.content === 'string' ? 
-                      (note.content.trim() === '' ? 'Empty note' : note.content.substring(0, 60) + (note.content.length > 60 ? '...' : '')) : 
+                      (note.content.trim() === '' ? 'No content' : note.content.substring(0, 80) + (note.content.length > 80 ? '...' : '')) : 
                       '[Rich Content]') : 
-                    'Empty note'}
-                </p>
+                    'No content'}
+                </div>
+                <div className="note-date">
+                  {new Date(note.updatedAt || note.createdAt || Date.now()).toLocaleDateString()}
+                </div>
               </div>
-            ))}
-          </div>
+            );
+          })}
         </div>
       </Sidebar>
       
-      {/* Main content area - simple absolute positioning for full viewport */}
-      <div style={{
-        position: 'absolute',
-        top: '56px', 
-        left: 0,
-        right: 0,
-        bottom: 0,
-        background: '#1c2128'
-      }}>
+      <div className="main-content">
         {selectedNoteId ? (
-          <div style={{ position: 'relative', width: '100%', height: '100%', padding: '16px' }}>
+          <div className="editor-container">
             <Editor noteId={selectedNoteId} />
             
-            {syncService && (
-              <div style={{ position: 'absolute', bottom: 16, right: 16, zIndex: 50 }}>
+            {/* Sync Status */}
+            {appState.syncService && (
+              <div className="sync-status-container">
                 <SyncStatus 
                   syncService={{
-                    getSyncStatus: () => Promise.resolve({
-                      isActive: dbStatus.syncActive,
+                    getSyncStatus: async () => ({
+                      isActive: appState.dbStatus.syncActive,
                       isPeriodicSyncActive: false,
-                      isRemoteConnected: dbStatus.remoteConnected
+                      isRemoteConnected: appState.dbStatus.remoteConnected
                     }),
                     syncNow: async () => {
-                      if (!syncService) return false;
-                      const result = await syncService.startSync()();
-                      return E.fold(
-                        (error: Error) => { console.error('Sync failed:', error); return false; },
-                        (success: boolean) => success
-                      )(result);
+                      if (appState.syncService) {
+                        const result = await appState.syncService.startSync()();
+                        return E.fold(
+                          (error: Error) => { console.error('Sync failed:', error); return false; },
+                          (success: boolean) => success
+                        )(result);
+                      }
+                      return false;
                     }
                   }}
                 />
@@ -314,12 +432,10 @@ const App: React.FC = () => {
             )}
           </div>
         ) : (
-          <div className="no-note-selected flex flex-col items-center justify-center h-full text-gray-500">
-            <svg xmlns="http://www.w3.org/2000/svg" className="h-16 w-16 mb-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1}>
-              <path strokeLinecap="round" strokeLinejoin="round" d="M11 5H6a2 2 0 00-2 2v11a2 2 0 002 2h11a2 2 0 002-2v-5m-1.414-9.414a2 2 0 112.828 2.828L11.828 15H9v-2.828l8.586-8.586z" />
-            </svg>
-            <p className="text-lg">Select a note to view or edit</p>
-            <p className="text-sm">Or, create a new note using the button in the sidebar.</p>
+          <div className="no-note-selected">
+            <div className="placeholder-icon">📝</div>
+            <p className="placeholder-text">Select a note to view or edit</p>
+            <p className="placeholder-subtext">Or, create a new note using the button in the sidebar.</p>
           </div>
         )}
       </div>

@@ -8,6 +8,7 @@ import { createNotesService } from '../services/notes/notes.service';
 import * as TE from 'fp-ts/TaskEither';
 import * as E from 'fp-ts/Either';
 import * as F from 'fp-ts/function';
+import { extractTitleFromContent } from '../utils/noteUtils';
 import type { Database } from '../types/db';
 
 interface EditorProps {
@@ -39,6 +40,7 @@ export const Editor: React.FC<EditorProps> = ({ noteId }) => {
   const editorContainerRef = useRef<HTMLDivElement>(null);
   const [isSaving, setIsSaving] = useState<boolean>(false);
   const [title, setTitle] = useState<string>('');
+  const titleRef = useRef<string>('Untitled Note');
 
   // Initialize database and notes service
   const notesServiceRef = useRef(() => {
@@ -103,28 +105,33 @@ export const Editor: React.FC<EditorProps> = ({ noteId }) => {
         }
       },
     },
-    onUpdate: ({ editor }) => {
+    onUpdate: ({ editor }: { editor: TiptapEditor }) => {
       if (isApplyingRemoteUpdate.current) return;
       
       const content = editor.getJSON();
       const contentStr = JSON.stringify(content);
-      const currentTitle = '';
+      
+      // Extract title from content
+      const extractedTitle = extractTitleFromContent(content);
+      titleRef.current = extractedTitle;
+      setTitle(extractedTitle);
+      
+      // Dispatch a custom event with the title for other components to use
+      const titleEvent = new CustomEvent('cogneez:note:title', { 
+        detail: { title: extractedTitle, noteId } 
+      });
+      document.dispatchEvent(titleEvent);
       
       // Skip if content hasn't changed
       if (lastSavedContent.current === contentStr) return;
       
       // Clear any pending save
-      if (pendingSave.current) {
-        clearTimeout(pendingSave.current);
-      }
-      
-      // Clear any pending save
-      if (pendingSave.current) {
-        clearTimeout(pendingSave.current);
+      if (debounceTimeoutRef.current) {
+        clearTimeout(debounceTimeoutRef.current);
       }
       
       // Use a shorter debounce for better responsiveness
-      pendingSave.current = window.setTimeout(async () => {
+      debounceTimeoutRef.current = window.setTimeout(async () => {
         try {
           if (!noteId) return;
           
@@ -148,7 +155,7 @@ export const Editor: React.FC<EditorProps> = ({ noteId }) => {
             
             const update = {
               ...currentDoc,
-              title: currentTitle,
+              title: extractedTitle, // Use the extracted title
               content: contentString,
               updatedAt: new Date().toISOString()
             };
@@ -157,7 +164,7 @@ export const Editor: React.FC<EditorProps> = ({ noteId }) => {
             if (E.isRight(saveResult)) {
               lastSavedContent.current = contentStr;
               if (saveResult.right?.rev) {
-                pendingSave.current = saveResult.right.rev;
+                lastSavedRevRef.current = saveResult.right.rev;
               }
             }
           }
@@ -166,25 +173,35 @@ export const Editor: React.FC<EditorProps> = ({ noteId }) => {
         }
       }, 100); // Reduced from 500ms to 100ms for better responsiveness
       
-      return () => {
-        if (pendingSave.current) {
-          clearTimeout(pendingSave.current);
-        }
-      };
-    },
-  });
+    }
+  }, [noteId, initialContent]); // Key dependencies for re-initializing or updating editor content
+
+  // Effect to clear pending save timeout if noteId changes or component unmounts
+  useEffect(() => {
+    return () => {
+      if (debounceTimeoutRef.current) {
+        clearTimeout(debounceTimeoutRef.current);
+        debounceTimeoutRef.current = null;
+      }
+    };
+  }, [noteId]); // Only re-run cleanup logic if noteId changes
 
   // Save note function with debounce
-  const saveNote = useCallback((title: string, content: any): Promise<void> => {
+  const saveNote = useCallback((content: any): Promise<void> => {
     if (!noteId || !content) return Promise.resolve();
     
     setIsSaving(true);
+    
+    // Extract title from content
+    const extractedTitle = extractTitleFromContent(content);
+    titleRef.current = extractedTitle;
+    setTitle(extractedTitle);
     
     return new Promise<void>((resolve, reject) => {
       const notesService = notesServiceRef.current();
       
       notesService.update(noteId, { 
-        title, 
+        title: extractedTitle, 
         content,
         updatedAt: new Date().toISOString()
       })().then(result => {
@@ -226,7 +243,31 @@ export const Editor: React.FC<EditorProps> = ({ noteId }) => {
           console.error('Error loading note:', result.left);
         } else {
           const note = result.right;
-          setTitle(note.title || '');
+          
+          // Extract title from content or use existing title
+          let extractedTitle = note.title || '';
+          
+          // If no title but has content, try to extract from content
+          if (!extractedTitle && note.content) {
+            try {
+              const contentObj = typeof note.content === 'string' ? 
+                JSON.parse(note.content) : note.content;
+              extractedTitle = extractTitleFromContent(contentObj);
+            } catch (e) {
+              console.error('Error extracting title from content:', e);
+              extractedTitle = 'Untitled Note';
+            }
+          }
+          
+          // Set title and update ref
+          setTitle(extractedTitle);
+          titleRef.current = extractedTitle;
+          
+          // Emit title event
+          const titleEvent = new CustomEvent('cogneez:note:title', { 
+            detail: { title: extractedTitle, noteId } 
+          });
+          document.dispatchEvent(titleEvent);
           
           // Parse content if it's a string, otherwise use as is or default
           let contentToSet;
@@ -261,8 +302,23 @@ export const Editor: React.FC<EditorProps> = ({ noteId }) => {
 
   // Update editor content when initial content changes
   useEffect(() => {
-    if (editor && initialContent) {
-      editor.commands.setContent(initialContent);
+    if (editor) {
+      if (initialContent) {
+        // Only set content if it's different to prevent unnecessary updates
+        const currentContent = JSON.stringify(editor.getJSON());
+        if (currentContent !== JSON.stringify(initialContent)) {
+          editor.commands.setContent(initialContent);
+        }
+      } else if (!editor.getText()) {
+        // Only set empty content if editor is truly empty
+        editor.commands.setContent({
+          type: 'doc',
+          content: [{
+            type: 'paragraph',
+            content: []
+          }]
+        });
+      }
     }
   }, [editor, initialContent]);
 
@@ -366,7 +422,8 @@ export const Editor: React.FC<EditorProps> = ({ noteId }) => {
   // Track last saved content to detect changes
   const lastSavedContent = useRef<any>(null);
   const isApplyingRemoteUpdate = useRef(false);
-  const pendingSave = useRef<number | null>(null);
+  const debounceTimeoutRef = useRef<number | null>(null);
+  const lastSavedRevRef = useRef<string | null>(null);
   
   // Set up PouchDB changes feed for real-time updates
   useEffect(() => {
@@ -398,8 +455,8 @@ export const Editor: React.FC<EditorProps> = ({ noteId }) => {
         const doc = change.doc;
         
         // Skip if this is our own pending save
-        if (pendingSave.current === doc._rev) {
-          pendingSave.current = null;
+        if (lastSavedRevRef.current === doc._rev) {
+          lastSavedRevRef.current = null; // Reset after confirming self-update
           return;
         }
         

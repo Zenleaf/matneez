@@ -1,15 +1,38 @@
-/* Basic TipTap editor styling for dark theme */
+/* TipTap editor styling with responsive typography */
 .ProseMirror {
-  text-align: left; /* Ensure content is left-aligned */
-  height: 100%; /* Make it take full height of its parent */
-  box-sizing: border-box; /* Ensure any implicit browser/extension styles don't break layout */
-  outline: none !important; /* Prevent any focus highlight */
-  border: none !important; /* Prevent any border */
-  box-shadow: none !important; /* Ensure no shadow that might look like a border */
-  color: #c9d1d9; /* Light grey text for dark background */
-  background-color: #1c2128; /* Match main content background for seamless look */
-  padding: 3rem 12rem 3rem 3rem !important; /* Generous padding with extra space on right side like Notion/Tana */
+  --editor-padding-x: 1.5rem;
+  --editor-padding-y: 2rem;
+  
+  text-align: left;
+  height: 100%;
+  box-sizing: border-box;
+  outline: none !important;
+  border: none !important;
+  box-shadow: none !important;
+  color: var(--color-text);
+  background-color: var(--color-bg);
+  padding: var(--editor-padding-y) var(--editor-padding-x) !important;
   max-width: 100%;
+  font-size: var(--text-md);
+  line-height: var(--leading-relaxed);
+  -webkit-overflow-scrolling: touch;
+  
+  /* Responsive padding */
+  @media (min-width: 640px) {
+    --editor-padding-x: 2.5rem;
+    --editor-padding-y: 3rem;
+  }
+  
+  @media (min-width: 1024px) {
+    --editor-padding-x: 5rem;
+    --editor-padding-y: 4rem;
+    padding-right: 12rem !important; /* Extra space on the right for large screens */
+  }
+  
+  /* Optimize text rendering */
+  text-rendering: optimizeLegibility;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
 }
 
 /* Global rules to disable focus styles */
@@ -42,18 +65,41 @@
   transition: none !important;
 }
 
-.ProseMirror p.is-editor-empty:first-child::before {
-  content: attr(data-placeholder);
-  float: left;
-  color: #6a737d;
-  pointer-events: none;
-  height: 0;
-}
+/* Removed placeholder styling to prevent watermark */
 
 .ProseMirror h1, .ProseMirror h2, .ProseMirror h3, .ProseMirror h4, .ProseMirror h5, .ProseMirror h6 {
-  color: #c9d1d9;
+  color: var(--color-text);
   margin-top: 1.5em;
-  margin-bottom: 0.5em;
+  margin-bottom: 0.75em;
+  line-height: var(--leading-tight);
+  font-weight: 600;
+  
+  /* Slightly reduce margins on mobile */
+  @media (max-width: 640px) {
+    margin-top: 1.25em;
+    margin-bottom: 0.5em;
+  }
+}
+
+/* Adjust heading sizes specifically for the editor */
+.ProseMirror h1 {
+  font-size: clamp(1.8rem, 5vw, 2.5rem);
+}
+
+.ProseMirror h2 {
+  font-size: clamp(1.5rem, 4vw, 2rem);
+}
+
+.ProseMirror h3 {
+  font-size: clamp(1.25rem, 3vw, 1.5rem);
+}
+
+.ProseMirror h4 {
+  font-size: clamp(1.125rem, 2.5vw, 1.25rem);
+}
+
+.ProseMirror h5, .ProseMirror h6 {
+  font-size: 1.125rem;
 }
 
 .ProseMirror strong {

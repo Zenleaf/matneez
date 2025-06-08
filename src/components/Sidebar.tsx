@@ -5,9 +5,10 @@ export interface SidebarProps {
   open: boolean;
   onClose: () => void;
   children?: React.ReactNode;
+  className?: string;
 }
 
-const Sidebar: React.FC<SidebarProps> = ({ open, onClose, children }) => {
+const Sidebar: React.FC<SidebarProps> = ({ open, onClose, children, className = '' }) => {
   return (
     <div style={{
       position: 'fixed',
@@ -36,22 +37,25 @@ const Sidebar: React.FC<SidebarProps> = ({ open, onClose, children }) => {
         }}
       />
       {/* Drawer */}
-      <aside style={{
-        position: 'absolute',
-        top: 0,
-        left: 0,
-        height: '100vh',
-        width: 280,
-        background: '#23272f',
-        color: '#fff',
-        boxShadow: '2px 0 16px rgba(0,0,0,0.28)',
-        transform: open ? 'translateX(0)' : 'translateX(-100%)',
-        transition: 'transform 0.3s',
-        zIndex: 3001,
-        padding: 24,
-        display: 'flex',
-        flexDirection: 'column',
-      }}>
+      <aside 
+        className={`h-full flex flex-col ${className}`}
+        style={{
+          position: 'absolute',
+          top: 0,
+          left: 0,
+          height: '100vh',
+          width: 280,
+          background: '#1e222a',
+          color: '#e2e8f0',
+          boxShadow: '2px 0 16px rgba(0,0,0,0.28)',
+          transform: open ? 'translateX(0)' : 'translateX(-100%)',
+          transition: 'transform 0.3s',
+          zIndex: 3001,
+          padding: 24,
+          display: 'flex',
+          flexDirection: 'column',
+        }}
+      >
         <button
           aria-label="Close sidebar"
           onClick={onClose}
