@@ -331,73 +331,64 @@ const App: React.FC = () => {
       />
       
       <Sidebar open={drawerOpen} onClose={() => setDrawerOpen(false)}>
-        <div className="sidebar-header">
-          <h2>Notes</h2>
-          <button
-            onClick={() => {
-              if (appState.notesService) {
-                pipe(
-                  appState.notesService.create({
-                    title: 'New Note',
-                    content: '',
-                    type: 'note',
-                    createdAt: new Date().toISOString(),
-                    updatedAt: new Date().toISOString(),
-                  }),
-                  TE.match(
-                    (error) => { 
-                      console.error('Failed to create note:', error); 
-                      return null; 
-                    },
-                    (note) => { 
-                      setSelectedNoteId(note._id); 
-                      return note; 
-                    }
-                  )
-                )();
-              }
-              if (window.innerWidth < 768) { 
-                setDrawerOpen(false); 
-              }
-            }}
-            className="new-note-btn"
-            aria-label="New note"
-          >
-            <svg xmlns="http://www.w3.org/2000/svg" className="h-5 w-5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 4v16m8-8H4" />
-            </svg>
-          </button>
-        </div>
-        
-        <div className="notes-list">
-          {notes.map(note => {
-            const isSelected = String(selectedNoteId) === String(note._id);
-            
-            return (
-              <div 
-                key={note._id} 
-                className={`note-item ${isSelected ? 'selected' : ''}`}
-                onClick={() => {
-                  setSelectedNoteId(String(note._id));
-                  if (window.innerWidth < 768) { 
-                    setDrawerOpen(false); 
-                  }
-                }}
-              >
-                <div className="note-title">{note.title || 'Untitled Note'}</div>
-                <div className="note-preview">
-                  {note.content ? 
-                    (typeof note.content === 'string' ? 
-                      (note.content.trim() === '' ? 'No content' : note.content.substring(0, 80) + (note.content.length > 80 ? '...' : '')) : 
-                      '[Rich Content]') : 
-                    'No content'}
+        <div className="sidebar-content">
+          <div className="sidebar-header">
+            <h2 className="sidebar-title" style={{color: "rgb(255, 224, 130)"}}>NOTES</h2>
+            <button 
+              onClick={async () => {
+                if (notesService) {
+                  pipe(
+                    notesService.create({
+                      title: 'New Note',
+                      content: '',
+                      type: 'note',
+                      createdAt: new Date().toISOString(),
+                      updatedAt: new Date().toISOString(),
+                    }),
+                    TE.match(
+                      (error) => { 
+                        console.error('Failed to create note:', error); 
+                        return null; 
+                      },
+                      (note) => { 
+                        setSelectedNoteId(note._id); 
+                        return note; 
+                      }
+                    )
+                  )();
+                }
+                if (window.innerWidth < 768) { 
+                  setDrawerOpen(false); 
+                }
+              }}
+              className="new-note-btn"
+              aria-label="New note"
+            >
+              <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" fill="currentColor" viewBox="0 0 16 16">
+                <path d="M8 4a.5.5 0 0 1 .5.5v3h3a.5.5 0 0 1 0 1h-3v3a.5.5 0 0 1-1 0v-3h-3a.5.5 0 0 1 0-1h3v-3A.5.5 0 0 1 8 4z"/>
+              </svg>
+            </button>
+          </div>
+          
+          <div className="note-list">
+            {notes.map(note => {
+              const isSelected = String(selectedNoteId) === String(note._id);
+              
+              return (
+                <div 
+                  key={note._id} 
+                  className={`note-item ${isSelected ? 'selected' : ''}`}
+                  onClick={() => {
+                    setSelectedNoteId(String(note._id));
+                    // Close drawer on all devices
+                    setDrawerOpen(false);
+                  }}
+                >
+                  {note.title || 'Untitled Note'}
                 </div>
-                <div className="note-date">
-                  {new Date(note.updatedAt || note.createdAt || Date.now()).toLocaleDateString()}
-                </div>
-              </div>
-            );
-          })}
+              );
+            })}
+          </div>
         </div>
       </Sidebar>
       
