@@ -3,11 +3,43 @@
   text-align: left; /* Ensure content is left-aligned */
   height: 100%; /* Make it take full height of its parent */
   box-sizing: border-box; /* Ensure any implicit browser/extension styles don't break layout */
-  outline: none;
+  outline: none !important; /* Prevent any focus highlight */
+  border: none !important; /* Prevent any border */
+  box-shadow: none !important; /* Ensure no shadow that might look like a border */
   color: #c9d1d9; /* Light grey text for dark background */
   background-color: #1c2128; /* Match main content background for seamless look */
-  padding-left: 1rem; /* Add a little left padding for text not to stick to the edge */
-  padding-right: 1rem; /* Add a little right padding for text not to stick to the edge */
+  padding: 3rem 12rem 3rem 3rem !important; /* Generous padding with extra space on right side like Notion/Tana */
+  max-width: 100%;
+}
+
+/* Global rules to disable focus styles */
+*:focus {
+  outline: none !important;
+  box-shadow: none !important;
+  border-color: transparent !important;
+}
+
+/* Remove all focus/active styles specifically for editor */
+.ProseMirror:focus,
+.ProseMirror:active,
+.ProseMirror-focused,
+.ProseMirror:focus-visible,
+.tiptap:focus,
+.tiptap:focus-visible,
+.tiptap:active,
+.tiptap *:focus,
+.EditorContent:focus,
+.EditorContent *:focus {
+  outline: none !important;
+  border: none !important;
+  box-shadow: none !important;
+  border-color: transparent !important;
+}
+
+/* Remove any transition effects that might cause visual highlighting */
+.ProseMirror *,
+.tiptap * {
+  transition: none !important;
 }
 
 .ProseMirror p.is-editor-empty:first-child::before {

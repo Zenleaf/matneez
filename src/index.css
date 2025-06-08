@@ -10,7 +10,12 @@ a:hover {
 
 @import url('https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&display=swap');
 
+html {
+  height: 100%;
+}
+
 body {
+  height: 100%;
   margin: 0;
   font-family: 'Inter', sans-serif;
   -webkit-font-smoothing: antialiased;
@@ -20,9 +25,9 @@ body {
 }
 
 #root {
+  height: 100%;
   display: flex;
   flex-direction: column;
-  min-height: 100vh;
 }
 
 h1 {
