@@ -197,19 +197,16 @@ export const createSyncService = (
               if (E.isRight(result)) {
                 resolve(result.right);
               } else {
-                console.error('Debounced sync failed:', result.left);
                 resolve(false);
               }
             } catch (error) {
               const err = error instanceof Error ? error : new Error('Unknown error in debouncedSync');
-              console.error('Debounced sync failed:', err);
               resolve(false);
             }
           }, DEBOUNCE_DELAY);
         }),
       (error) => {
         const err = error instanceof Error ? error : new Error('Unknown error in debouncedSync');
-        console.error('Debounced sync failed:', err);
         return err;
       }
     );
@@ -236,12 +233,11 @@ export const createSyncService = (
         },
         (error) => {
           const err = error instanceof Error ? error : new Error('Failed to stop sync');
-          console.error('Error stopping sync:', err);
           return err;
         }
       ),
       TE.fold(
-        (error) => T.fromIO(() => console.error('Failed to stop sync:', error)),
+        (error) => T.fromIO(() => {}),
         () => T.of(undefined)
       )
     );

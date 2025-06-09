@@ -1,437 +1,378 @@
-import React, { useState, useEffect, useRef, useCallback } from 'react';
-import { Editor as TiptapEditor } from '@tiptap/react';
+import React, { useCallback, useEffect, useRef, useState } from 'react';
+import { Editor as TiptapEditor, useEditor, EditorContent, BubbleMenu, Range } from '@tiptap/react';
 import StarterKit from '@tiptap/starter-kit';
 import Placeholder from '@tiptap/extension-placeholder';
-import { EditorContent, useEditor, BubbleMenu } from '@tiptap/react';
-import '../editor.css'; // Import editor styles
-import { createNotesService } from '../services/notes/notes.service';
+import { useAtom } from 'jotai';
 import * as TE from 'fp-ts/TaskEither';
 import * as E from 'fp-ts/Either';
 import * as F from 'fp-ts/function';
 import { extractTitleFromContent } from '../utils/noteUtils';
-import type { Database } from '../types/db';
+import { EditorBubbleMenu } from './EditorBubbleMenu';
+import {
+  editorModeAtom,
+  editorTitleAtom,
+  editorErrorAtom,
+  editorLastSavedAtom,
+  editorIsSavingAtom,
+  editorInstanceAtom,
+  createDatabaseServiceAtom,
+  currentNoteIdAtom,
+  commandMenuAtom
+} from '../state/atoms';
+
+import '../editor.css';
+import '../backslash-menu.css';
+import BackslashMenuWorking from '../extensions/BackslashMenuWorking';
+import ReactDOM from 'react-dom';
+import TaskList from '@tiptap/extension-task-list';
+import TaskItem from '@tiptap/extension-task-item';
+import { Database } from '../services/database/db.fp';
+import { NoteDocument } from '../types/note';
+import { createNotesServiceFp } from '../services/database/notes';
+import Underline from '@tiptap/extension-underline';
+import Image from '@tiptap/extension-image';
+import Table from '@tiptap/extension-table';
+import TableRow from '@tiptap/extension-table-row';
+import TableCell from '@tiptap/extension-table-cell';
+import TableHeader from '@tiptap/extension-table-header';
+import Link from '@tiptap/extension-link';
+import TextAlign from '@tiptap/extension-text-align';
+import Typography from '@tiptap/extension-typography';
+import Color from '@tiptap/extension-color';
+import TextStyle from '@tiptap/extension-text-style';
+import Highlight from '@tiptap/extension-highlight';
+import Subscript from '@tiptap/extension-subscript';
+import Superscript from '@tiptap/extension-superscript';
+
+import { createDb } from '../services/database/db.fp';
+import { pipe } from 'fp-ts/function';
 
 interface EditorProps {
-  noteId?: string;
+  noteId: string;
+  initialContent?: string;
+  initialTitle?: string;
+  onTitleChange?: (title: string) => void;
 }
 
-type EditorMode = 'reading' | 'editing';
-
-interface SelectionState {
-  open: boolean;
-  position: { x: number; y: number };
-  text: string;
-  html: string;
-}
-
-interface CommandItem {
-  title: string;
-  description: string;
-  icon: string; // Or React.ReactNode if using icons as components
-  command: (editor: TiptapEditor) => void;
-}
-
-export const Editor: React.FC<EditorProps> = ({ noteId }) => {
-  const [selectedNodeState, setSelectedNodeState] = useState<SelectionState>({ open: false, position: { x: 0, y: 0 }, text: '', html: '' });
-  const [lastSaved, setLastSaved] = useState<Date | null>(null);
+const Editor: React.FC<EditorProps> = ({ 
+  noteId, 
+  initialContent = '', 
+  initialTitle = '', 
+  onTitleChange 
+}) => {
+  const [content, setContent] = useState(initialContent);
+  const [title, setTitle] = useState(initialTitle);
+  const [editorMode, setEditorMode] = useState<'reading' | 'editing'>('editing');
+  const [isSaving, setIsSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const [initialContent, setInitialContent] = useState<any>(null);
-  const [editorMode, setEditorMode] = useState<EditorMode>('reading');
+  const [lastSaved, setLastSaved] = useState<Date | null>(null);
+  const db = useRef<any>(null);
+  const lastSavedContent = useRef<string>('');
+  const lastSavedRevRef = useRef<string>('');
+  const isApplyingRemoteUpdate = useRef(false);
+  const debounceTimeoutRef = useRef<number | null>(null);
   const editorContainerRef = useRef<HTMLDivElement>(null);
-  const [isSaving, setIsSaving] = useState<boolean>(false);
-  const [title, setTitle] = useState<string>('');
-  const titleRef = useRef<string>('Untitled Note');
+  const lastTapTime = useRef(0);
+  const tapTimeout = useRef<number | null>(null);
+  const tapPosition = useRef({ x: 0, y: 0 });
 
-  // Initialize database and notes service
-  const notesServiceRef = useRef(() => {
-    if (typeof window !== 'undefined' && (window as any).PouchDB) {
-      const pouchdb = new (window as any).PouchDB('notes');
-      const db: Database = {
-        get: (id: string) => pouchdb.get(id),
-        put: (doc: any) => pouchdb.put(doc),
-        remove: (doc: any, rev?: string) => 
-          typeof doc === 'string' ? pouchdb.remove(doc, rev) : pouchdb.remove(doc),
-        find: (query: any) => pouchdb.find(query),
-        changes: (options: any = {}) => ({
-          on: (event: string, handler: (change: any) => void) => 
-            pouchdb.changes(options).on(event, handler),
-          off: (event: string, handler: (change: any) => void) => 
-            pouchdb.changes(options).off(event, handler),
-          cancel: () => pouchdb.changes(options).cancel()
-        }),
-        destroy: () => pouchdb.destroy(),
-        sync: (remoteDb: string | Database<any>, options?: any) => 
-          pouchdb.sync(remoteDb, options),
-        info: () => pouchdb.info(),
-        createIndex: (options: any) => pouchdb.createIndex(options)
-      };
-      return createNotesService(db);
-    }
-    throw new Error('PouchDB not available');
-  });
+  // Jotai atoms
+  const [editorModeAtomState, setEditorModeAtom] = useAtom(editorModeAtom);
+  const [titleAtom, setTitleAtom] = useAtom(editorTitleAtom);
+  const [errorAtom, setErrorAtom] = useAtom(editorErrorAtom);
+  const [lastSavedAtom, setLastSavedAtom] = useAtom(editorLastSavedAtom);
+  const [isSavingAtom, setIsSavingAtom] = useAtom(editorIsSavingAtom);
+  const [editorAtom, setEditorAtom] = useAtom(editorInstanceAtom);
+  const [dbAtom] = useAtom(createDatabaseServiceAtom);
+  const [currentNoteId, setCurrentNoteId] = useAtom(currentNoteIdAtom);
+  const [commandMenu, setCommandMenu] = useAtom(commandMenuAtom);
 
-  // Create editor instance
-  const editor = useEditor({
-    extensions: [
-      StarterKit,
-      Placeholder.configure({
-        placeholder: 'Double-tap to edit, press \\ for commands...'
-      }),
-    ],
-    content: initialContent,
-    editorProps: {
-      attributes: {
-        class: 'editor-content',
-        style: `
-          height: 100%;
-          width: 100%;
-          padding: 3rem 12rem 3rem 3rem;
-          box-sizing: border-box;
-          -webkit-overflow-scrolling: touch;
-          overflow-y: auto;
-          outline: none;
-          position: relative;
-          z-index: 1;
-          user-select: text;
-          -webkit-user-select: text;
-          -webkit-touch-callout: default;
-          -webkit-tap-highlight-color: rgba(0, 0, 0, 0);
-        `
-      },
-      handleDOMEvents: {
-        blur: () => {
-          setEditorMode('reading');
-          return false;
-        }
-      },
-    },
-    onUpdate: ({ editor }: { editor: TiptapEditor }) => {
-      if (isApplyingRemoteUpdate.current) return;
-      
-      const content = editor.getJSON();
-      const contentStr = JSON.stringify(content);
-      
-      // Extract title from content
-      const extractedTitle = extractTitleFromContent(content);
-      titleRef.current = extractedTitle;
-      setTitle(extractedTitle);
-      
-      // Dispatch a custom event with the title for other components to use
-      const titleEvent = new CustomEvent('cogneez:note:title', { 
-        detail: { title: extractedTitle, noteId } 
-      });
-      document.dispatchEvent(titleEvent);
-      
-      // Skip if content hasn't changed
-      if (lastSavedContent.current === contentStr) return;
-      
-      // Clear any pending save
-      if (debounceTimeoutRef.current) {
-        clearTimeout(debounceTimeoutRef.current);
-      }
-      
-      // Use a shorter debounce for better responsiveness
-      debounceTimeoutRef.current = window.setTimeout(async () => {
-        try {
-          if (!noteId) return;
-          
-          const notesService = notesServiceRef.current();
-          if (!notesService) return;
-          
-          // Skip if content hasn't changed since last save
-          if (lastSavedContent.current === contentStr) return;
-          
-          // Get latest doc to handle conflicts
-          const result = await notesService.get(noteId)();
-          if (E.isRight(result)) {
-            const currentDoc = result.right;
-            const contentString = JSON.stringify(content);
-            
-            // Skip if content is the same as the one we're about to save
-            if (currentDoc.content === contentString) {
-              lastSavedContent.current = contentStr;
-              return;
-            }
-            
-            const update = {
-              ...currentDoc,
-              title: extractedTitle, // Use the extracted title
-              content: contentString,
-              updatedAt: new Date().toISOString()
-            };
-            
-            const saveResult = await notesService.update(noteId, update)();
-            if (E.isRight(saveResult)) {
-              lastSavedContent.current = contentStr;
-              if (saveResult.right?.rev) {
-                lastSavedRevRef.current = saveResult.right.rev;
-              }
-            }
-          }
-        } catch (error) {
-          console.error('Error saving note:', error);
-        }
-      }, 100); // Reduced from 500ms to 100ms for better responsiveness
-      
-    }
-  }, [noteId, initialContent]); // Key dependencies for re-initializing or updating editor content
-
-  // Effect to clear pending save timeout if noteId changes or component unmounts
+  // Ensure db is initialized properly
   useEffect(() => {
+    if (!db.current) {
+      const PouchDB = (window as any).PouchDB;
+      if (!PouchDB) {
+        console.error('PouchDB is not loaded');
+        setError('PouchDB is not available');
+        return;
+      }
+      db.current = createDb(new PouchDB('notes'));
+    }
+    
+    // Cleanup function
     return () => {
       if (debounceTimeoutRef.current) {
         clearTimeout(debounceTimeoutRef.current);
-        debounceTimeoutRef.current = null;
       }
     };
-  }, [noteId]); // Only re-run cleanup logic if noteId changes
+  }, []);
 
-  // Save note function with debounce
-  const saveNote = useCallback((content: any): Promise<void> => {
-    if (!noteId || !content) return Promise.resolve();
+  // Simple promise-based saveNote to avoid fp-ts complexity
+  const saveNote = useCallback(async (html: string) => {
+    if (!noteId || !db.current) return;
     
-    setIsSaving(true);
-    
-    // Extract title from content
-    const extractedTitle = extractTitleFromContent(content);
-    titleRef.current = extractedTitle;
-    setTitle(extractedTitle);
-    
-    return new Promise<void>((resolve, reject) => {
-      const notesService = notesServiceRef.current();
-      
-      notesService.update(noteId, { 
-        title: extractedTitle, 
-        content,
-        updatedAt: new Date().toISOString()
-      })().then(result => {
-        if (E.isLeft(result)) {
-          setError('Failed to save note');
-          console.error('Error saving note:', result.left);
-          reject(result.left);
-        } else {
+    // Debounce saves to prevent excessive calls
+    if (debounceTimeoutRef.current) {
+      clearTimeout(debounceTimeoutRef.current);
+    }
+
+    debounceTimeoutRef.current = window.setTimeout(async () => {
+      try {
+        setIsSaving(true);
+        
+        // Use direct PouchDB calls instead of fp-ts TaskEither
+        try {
+          // First try to get the document to get current revision
+          const existingDoc = await db.current.get(noteId);
+          
+          // Update the existing document
+          const updatedDoc = await db.current.put({
+            ...existingDoc,
+            content: html,
+            title: title || 'Untitled Note',
+            updatedAt: new Date().toISOString()
+          });
+          
+          lastSavedContent.current = html;
+          lastSavedRevRef.current = updatedDoc.rev;
           setLastSaved(new Date());
           setError(null);
-          resolve();
+          
+        } catch (updateError: any) {
+          // If document doesn't exist, create it
+          if (updateError.status === 404 || updateError.name === 'not_found') {
+            try {
+              const newDoc = await db.current.put({
+                _id: noteId,
+                content: html,
+                title: title || 'Untitled Note',
+                type: 'note',
+                createdAt: new Date().toISOString(),
+                updatedAt: new Date().toISOString()
+              });
+              
+              lastSavedContent.current = html;
+              lastSavedRevRef.current = newDoc.rev;
+              setLastSaved(new Date());
+              setError(null);
+              
+            } catch (createError) {
+              setError('Failed to save note');
+              console.error('Error creating note:', createError);
+            }
+          } else {
+            setError('Failed to save note');
+            console.error('Error updating note:', updateError);
+          }
         }
-      }).catch(err => {
-        setError(err.message || 'Failed to save note');
-        console.error('Exception saving note:', err);
-        reject(err);
-      }).finally(() => {
+      } catch (error) {
+        setError('Failed to save note');
+        console.error('Error in saveNote:', error);
+      } finally {
         setIsSaving(false);
-      });
-    });
-  }, [noteId]);
+      }
+    }, 500); // 500ms debounce
+  }, [noteId, title, db]);
+
+  const extractTitleFromContent = (html: string): string => {
+    const tempDiv = document.createElement('div');
+    tempDiv.innerHTML = html;
+    const firstHeading = tempDiv.querySelector('h1, h2, h3');
+    return firstHeading ? firstHeading.textContent || '' : '';
+  };
+
+  const editorInstance = useEditor({
+    extensions: [
+      StarterKit.configure({
+        // Keep all StarterKit extensions enabled
+      }),
+      Underline,
+      TaskList,
+      TaskItem,
+      Image,
+      Table.configure({
+        resizable: true,
+      }),
+      TableRow,
+      TableCell,
+      TableHeader,
+      Link.configure({
+        openOnClick: false,
+      }),
+      TextAlign.configure({
+        types: ['heading', 'paragraph'],
+        alignments: ['left', 'center', 'right', 'justify'],
+        defaultAlignment: 'left',
+      }),
+      Typography,
+      TextStyle,
+      Color,
+      Highlight.configure({
+        multicolor: true,
+      }),
+      Subscript,
+      Superscript,
+      Placeholder.configure({
+        placeholder: 'Type / for commands...',
+      }),
+                BackslashMenuWorking,
+    ],
+    content: content,
+    onUpdate: ({ editor }) => {
+      const html = editor.getHTML();
+      setContent(html);
+      saveNote(html);
+      const title = extractTitleFromContent(html);
+      if (title) {
+        setTitleAtom(title);
+        if (onTitleChange) {
+          onTitleChange(title);
+        }
+      }
+    },
+    editorProps: {
+      attributes: {
+        class: 'prose prose-sm sm:prose lg:prose-lg xl:prose-2xl mx-auto focus:outline-none',
+      },
+    },
+  });
+
+  // Set editor instance in atom
+  useEffect(() => {
+    setEditorAtom(editorInstance);
+    // Auto-focus the editor when it's ready
+    if (editorInstance) {
+      setTimeout(() => {
+        editorInstance.commands.focus();
+      }, 100);
+    }
+  }, [editorInstance, setEditorAtom]);
 
   // Load note when noteId changes
   useEffect(() => {
     if (!noteId) {
-      setTitle('');
-      setInitialContent(null);
+      setTitleAtom('');
+      if (editorInstance) {
+        editorInstance.commands.setContent({ type: 'doc', content: [] });
+      }
       return;
     }
 
-    const loadNote = async () => {
-      setError(null);
+    setCurrentNoteId(noteId);
+    const loadNoteData = async () => {
+      if (!db.current) {
+        setErrorAtom('Database not initialized');
+        return;
+      }
+      setErrorAtom(null);
       try {
-        const notesService = notesServiceRef.current();
-        const result = await notesService.get(noteId)();
+        // Use direct PouchDB call instead of fp-ts TaskEither
+        const note = await db.current.get(noteId);
         
-        if (E.isLeft(result)) {
-          setError('Failed to load note');
-          console.error('Error loading note:', result.left);
-        } else {
-          const note = result.right;
-          
-          // Extract title from content or use existing title
-          let extractedTitle = note.title || '';
-          
-          // If no title but has content, try to extract from content
-          if (!extractedTitle && note.content) {
-            try {
-              const contentObj = typeof note.content === 'string' ? 
-                JSON.parse(note.content) : note.content;
-              extractedTitle = extractTitleFromContent(contentObj);
-            } catch (e) {
-              console.error('Error extracting title from content:', e);
-              extractedTitle = 'Untitled Note';
-            }
-          }
-          
-          // Set title and update ref
-          setTitle(extractedTitle);
-          titleRef.current = extractedTitle;
-          
-          // Emit title event
-          const titleEvent = new CustomEvent('cogneez:note:title', { 
-            detail: { title: extractedTitle, noteId } 
-          });
-          document.dispatchEvent(titleEvent);
-          
-          // Parse content if it's a string, otherwise use as is or default
-          let contentToSet;
+        let extractedTitle = note.title || '';
+        
+        if (!extractedTitle && note.content) {
           try {
-            contentToSet = typeof note.content === 'string' 
-              ? JSON.parse(note.content) 
-              : note.content || { type: 'doc', content: [] };
+            // For now, just use a simple fallback since title extraction is complex
+            extractedTitle = 'Untitled Note';
           } catch (e) {
-            console.error('Error parsing note content:', e);
-            contentToSet = { type: 'doc', content: [] };
-          }
-          
-          // Update last saved content reference
-          lastSavedContent.current = JSON.stringify(contentToSet);
-          
-          // If editor already exists, update its content directly
-          if (editor) {
-            editor.commands.setContent(contentToSet);
-          } else {
-            // Otherwise set initial content for when editor initializes
-            setInitialContent(contentToSet);
+            console.error('Error extracting title from content:', e);
+            extractedTitle = 'Untitled Note';
           }
         }
+        
+        setTitleAtom(extractedTitle);
+        
+        const titleEvent = new CustomEvent('cogneez:note:title', { 
+          detail: { title: extractedTitle, noteId } 
+        });
+        document.dispatchEvent(titleEvent);
+        
+        let contentToSet;
+        try {
+          contentToSet = typeof note.content === 'string' 
+            ? JSON.parse(note.content) 
+            : note.content || { type: 'doc', content: [] };
+        } catch (e) {
+          console.error('Error parsing note content:', e);
+          contentToSet = { type: 'doc', content: [] };
+        }
+        
+        lastSavedContent.current = JSON.stringify(contentToSet);
+        
+        if (editorInstance) {
+          editorInstance.commands.setContent(contentToSet);
+        }
       } catch (err: any) {
-        setError(err.message || 'Failed to load note');
+        setErrorAtom(err.message || 'Failed to load note');
         console.error('Error in loadNote:', err);
       }
     };
     
-    loadNote();
-  }, [noteId, editor]);
+    loadNoteData();
+  }, [noteId, editorInstance, db, setTitleAtom, setErrorAtom, setCurrentNoteId]);
 
-  // Update editor content when initial content changes
-  useEffect(() => {
-    if (editor) {
-      if (initialContent) {
-        // Only set content if it's different to prevent unnecessary updates
-        const currentContent = JSON.stringify(editor.getJSON());
-        if (currentContent !== JSON.stringify(initialContent)) {
-          editor.commands.setContent(initialContent);
-        }
-      } else if (!editor.getText()) {
-        // Only set empty content if editor is truly empty
-        editor.commands.setContent({
-          type: 'doc',
-          content: [{
-            type: 'paragraph',
-            content: []
-          }]
-        });
-      }
-    }
-  }, [editor, initialContent]);
-
-  // Track tap events and timeouts for mobile interaction
-  const lastTapTime = useRef(0);
-  const tapTimeout = useRef<number | null>(null);
-  const tapPosition = useRef({ x: 0, y: 0 });
-  
-  // Handle entering edit mode for double-tap and button interactions
+  // Handle entering edit mode
   const handleEnterEditMode = useCallback((position?: { x: number, y: number }) => {
     setEditorMode('editing');
     
-    if (editor) {
+    if (editorInstance) {
       setTimeout(() => {
         if (position) {
-          // Focus at specific position
-          const pos = editor.view.posAtCoords({ left: position.x, top: position.y });
+          const pos = editorInstance.view.posAtCoords({ left: position.x, top: position.y });
           if (pos) {
-            const { TextSelection } = editor.state.selection.constructor as any;
-            const tr = editor.state.tr;
-            const resolvedPos = editor.state.doc.resolve(pos.pos);
-            const selection = TextSelection.near(resolvedPos);
-            tr.setSelection(selection);
-            editor.view.dispatch(tr);
+            editorInstance.commands.setTextSelection(pos.pos);
           }
         }
-        editor.commands.focus();
-      }, 10);
+        editorInstance.commands.focus();
+      }, 0);
     }
-  }, [editor]);
-  
-  // Set up simplified event handlers for mobile and desktop
-  useEffect(() => {
-    const editorElement = editor?.options.element;
-    if (!editorElement) return;
+  }, [editorInstance, setEditorMode]);
 
-    // Mobile touch handler with double-tap detection
-    const handleTouch = (e: Event) => {
-      const touchEvent = e as unknown as TouchEvent;
-      if (!touchEvent.touches || touchEvent.touches.length === 0) return;
-      
-      // Get touch position
-      const touch = touchEvent.touches[0];
-      tapPosition.current = { x: touch.clientX, y: touch.clientY };
-      const currentTime = Date.now();
-      const timeSinceLastTap = currentTime - lastTapTime.current;
-      
-      // Check for double tap (two taps within 300ms)
-      if (timeSinceLastTap < 300 && timeSinceLastTap > 10) {  
-        // It's a double tap - enter edit mode
-        if (tapTimeout.current) {
-          window.clearTimeout(tapTimeout.current);
-          tapTimeout.current = null;
-        }
-        
+  // Set up event listeners
+  useEffect(() => {
+    if (!editorInstance) return;
+
+    const handleTouchStart = (e: TouchEvent) => {
+      if (e.touches.length > 1) {
         e.preventDefault();
-        handleEnterEditMode(tapPosition.current);
-      } else {
-        // First tap - start timer to detect potential second tap
-        if (tapTimeout.current) {
-          window.clearTimeout(tapTimeout.current);
-        }
-        
-        tapTimeout.current = window.setTimeout(() => {
-          tapTimeout.current = null;
-        }, 300);
-      }
-      
-      lastTapTime.current = currentTime;
-    };
-
-    // Desktop click handler - simpler as no double-click needed
-    const handleClick = (e: Event) => {
-      const mouseEvent = e as unknown as MouseEvent;
-      
-      // For desktop, a single click can enter edit mode
-      if (editorMode !== 'editing') {
-        handleEnterEditMode({ x: mouseEvent.clientX, y: mouseEvent.clientY });
       }
     };
 
-    // Add event listeners with proper type casting
-    editorElement.addEventListener('touchstart', handleTouch as EventListener, { 
-      passive: false  // Need this to allow preventDefault
-    });
-    
-    editorElement.addEventListener('click', handleClick as EventListener, false);
-    
-    // Clean up
+    const handleTouchMove = (e: TouchEvent) => {
+      if (e.touches.length > 1) {
+        e.preventDefault();
+      }
+    };
+
+    const handleTouchEnd = (e: TouchEvent) => {
+      if (e.touches.length > 1) {
+        e.preventDefault();
+      }
+    };
+
+    const handleEnterEditMode = () => {
+      setEditorMode('editing');
+    };
+
+    editorInstance.view.dom.addEventListener('touchstart', handleTouchStart, { passive: false });
+    editorInstance.view.dom.addEventListener('touchmove', handleTouchMove, { passive: false });
+    editorInstance.view.dom.addEventListener('touchend', handleTouchEnd, { passive: false });
+    editorInstance.view.dom.addEventListener('click', handleEnterEditMode);
+
     return () => {
-      editorElement.removeEventListener('touchstart', handleTouch as EventListener);
-      editorElement.removeEventListener('click', handleClick as EventListener);
-      
-      if (tapTimeout.current) {
-        window.clearTimeout(tapTimeout.current);
-      }
+      editorInstance.view.dom.removeEventListener('touchstart', handleTouchStart);
+      editorInstance.view.dom.removeEventListener('touchmove', handleTouchMove);
+      editorInstance.view.dom.removeEventListener('touchend', handleTouchEnd);
+      editorInstance.view.dom.removeEventListener('click', handleEnterEditMode);
     };
-  }, [editor, editorMode, handleEnterEditMode]);
+  }, [editorInstance, setEditorMode]);
 
-  
-  // Track last saved content to detect changes
-  const lastSavedContent = useRef<any>(null);
-  const isApplyingRemoteUpdate = useRef(false);
-  const debounceTimeoutRef = useRef<number | null>(null);
-  const lastSavedRevRef = useRef<string | null>(null);
-  
-  // Set up PouchDB changes feed for real-time updates
+  // Set up PouchDB changes feed
   useEffect(() => {
-    if (!noteId || !editor) return;
-    
-    const db = new (window as any).PouchDB('notes');
-    
-    const changes = db.changes({
+    if (!noteId || !editorInstance) return;
+    if (!db.current) return;
+    const changes = db.current.changes({
       since: 'now',
       live: true,
       include_docs: true,
@@ -440,42 +381,36 @@ export const Editor: React.FC<EditorProps> = ({ noteId }) => {
     });
     
     let lastChangeTime = 0;
-    const MIN_CHANGE_INTERVAL = 50; // ms
+    const MIN_CHANGE_INTERVAL = 50;
     
     changes.on('change', async (change: any) => {
       if (!change.doc || isApplyingRemoteUpdate.current) return;
       
       const now = Date.now();
-      if (now - lastChangeTime < MIN_CHANGE_INTERVAL) {
-        return; // Skip if changes are coming in too fast
-      }
+      if (now - lastChangeTime < MIN_CHANGE_INTERVAL) return;
       lastChangeTime = now;
       
       try {
         const doc = change.doc;
         
-        // Skip if this is our own pending save
         if (lastSavedRevRef.current === doc._rev) {
-          lastSavedRevRef.current = null; // Reset after confirming self-update
+          lastSavedRevRef.current = '';
           return;
         }
         
-        // Optimistically update the UI
         requestAnimationFrame(() => {
           try {
-            const currentContent = editor.getJSON();
+            const currentContent = editorInstance.getJSON();
             
-            // Parse remote content if it's a string
             let remoteContent;
             try {
               remoteContent = typeof doc.content === 'string' 
                 ? JSON.parse(doc.content)
                 : doc.content;
               
-              // Skip if content is the same
               if (JSON.stringify(currentContent) !== JSON.stringify(remoteContent)) {
                 isApplyingRemoteUpdate.current = true;
-                editor.commands.setContent(remoteContent);
+                editorInstance.commands.setContent(remoteContent);
                 lastSavedContent.current = JSON.stringify(remoteContent);
               }
             } catch (e) {
@@ -486,7 +421,6 @@ export const Editor: React.FC<EditorProps> = ({ noteId }) => {
             isApplyingRemoteUpdate.current = false;
           }
         });
-        
       } catch (error) {
         console.error('Error applying remote update:', error);
         isApplyingRemoteUpdate.current = false;
@@ -494,137 +428,11 @@ export const Editor: React.FC<EditorProps> = ({ noteId }) => {
     });
     
     return () => {
-      changes.cancel();
-    };
-  }, [noteId, editor]);
-
-  useEffect(() => {
-    const editorContainer = editorContainerRef.current;
-    if (editorContainer) {
-      const handleDoubleClick = () => {
-        handleEnterEditMode();
-      };
-
-      const lastTapTime = { current: 0 };
-      const handleTap = () => {
-        const now = Date.now();
-        const DOUBLE_TAP_DELAY = 300;
-        if (now - lastTapTime.current < DOUBLE_TAP_DELAY) {
-          handleEnterEditMode();
-        }
-        lastTapTime.current = now;
-      };
-
-      editorContainer.addEventListener('dblclick', handleDoubleClick);
-      editorContainer.addEventListener('click', handleTap);
-      editorContainer.addEventListener('touchend', handleTap);
-
-      return () => {
-        // Check editorContainer again for safety in cleanup as it might be null if component unmounted quickly
-        if (editorContainerRef.current) { 
-          editorContainerRef.current.removeEventListener('dblclick', handleDoubleClick);
-          editorContainerRef.current.removeEventListener('click', handleTap);
-          editorContainerRef.current.removeEventListener('touchend', handleTap);
-        }
-      };
-    }
-  }, [handleEnterEditMode]); // editorContainerRef is stable, so not needed as dependency
-
-// Command menu state
-const [showCommandMenu, setShowCommandMenu] = useState(false);
-const [commandMenuPosition, setCommandMenuPosition] = useState({ top: 0, left: 0 });
-const [selectedCommandIndex, setSelectedCommandIndex] = useState(0);
-const commandMenuRef = useRef<HTMLDivElement>(null);
-
-// Available commands
-const commands: CommandItem[] = [
-  {
-    title: 'Heading 1',
-    description: 'Big section heading',
-    icon: 'H1',
-    command: (editor: TiptapEditor) => editor.chain().focus().toggleHeading({ level: 1 }).run(),
-  },
-  {
-    title: 'Heading 2',
-    description: 'Medium section heading',
-    icon: 'H2',
-    command: (editor: TiptapEditor) => editor.chain().focus().toggleHeading({ level: 2 }).run(),
-  },
-  {
-    title: 'Bullet List',
-    description: 'Create a simple bullet list',
-    icon: '•',
-    command: (editor: TiptapEditor) => editor.chain().focus().toggleBulletList().run(),
-  },
-  {
-    title: 'Numbered List',
-    description: 'Create a numbered list',
-    icon: '1.',
-    command: (editor: TiptapEditor) => editor.chain().focus().toggleOrderedList().run(),
-  },
-  {
-    title: 'Code Block',
-    description: 'Insert a code block',
-    icon: '</>',
-    command: (editor: TiptapEditor) => editor.chain().focus().toggleCodeBlock().run(),
-  },
-];
-
-const executeCommand = (item: CommandItem) => {
-  if (editor) {
-    item.command(editor);
-    setShowCommandMenu(false); // Hide menu after execution
-  }
-};
-
-  // Handle slash command
-  const handleKeyDown = useCallback((e: KeyboardEvent) => {
-    if (!editor) return;
-
-    // Show command menu on backslash
-    if (e.key === '\\') {
-      e.preventDefault();
-      const { from } = editor.state.selection;
-      const { top, left } = editor.view.coordsAtPos(from);
-      setCommandMenuPosition({ top: top + 24, left });
-      setShowCommandMenu(true);
-      setSelectedCommandIndex(0);
-      return;
-    }
-
-    // Handle command menu navigation
-    if (showCommandMenu) {
-      if (e.key === 'ArrowDown') {
-        e.preventDefault();
-        setSelectedCommandIndex((prev) => (prev < commands.length - 1 ? prev + 1 : prev));
-      } else if (e.key === 'ArrowUp') {
-        e.preventDefault();
-        setSelectedCommandIndex((prev) => (prev > 0 ? prev - 1 : 0));
-      } else if (e.key === 'Enter') {
-        e.preventDefault();
-        const command = commands[selectedCommandIndex];
-        if (command) {
-          command.command(editor);
-          setShowCommandMenu(false);
-        }
-      } else if (e.key === 'Escape') {
-        e.preventDefault();
-        setShowCommandMenu(false);
+      if (changes && typeof changes.cancel === 'function') {
+        changes.cancel();
       }
-    }
-  }, [editor, showCommandMenu, selectedCommandIndex, commands]);
-// Editor styles and state
-const editorStyles = {
-  '--color-primary': '#3b82f6',
-  '--color-bg': '#111827',
-  '--color-surface': '#1f2937',
-  '--color-text': '#e5e7eb',
-  '--color-text-secondary': '#9ca3af',
-  '--color-border': '#374151',
-  '--color-hover': '#374151',
-} as React.CSSProperties;
-
-
+    };
+  }, [noteId, editorInstance, db]);
 
   return (
     <div 
@@ -639,109 +447,37 @@ const editorStyles = {
         display: 'flex',
         flexDirection: 'column',
         overflow: 'hidden',
-        // Optimize for touch devices
         isolation: 'isolate',
         touchAction: 'auto',
         userSelect: 'text',
         WebkitUserSelect: 'text'
       }}
-      // No need for custom onTouchStart handler here anymore
-      // The event listeners we added will handle touch events
     >
-      {/* Command Menu */}
-      {showCommandMenu && (
-        <div
-          ref={commandMenuRef}
-          className="absolute z-50 w-64 bg-gray-800 rounded-md shadow-lg border border-gray-700 overflow-hidden"
-          style={{
-            top: `${commandMenuPosition.top}px`,
-            left: `${commandMenuPosition.left}px`,
-          }}
-        >
-          <div className="p-1">
-            <div className="px-3 py-2 text-xs text-gray-400 border-b border-gray-700">
-              Type to filter, ↓↑ to navigate, Enter to select
-            </div>
-            <div className="max-h-80 overflow-y-auto">
-              {commands.map((command, index) => (
-                <button
-                  key={command.title}
-                  className={`w-full text-left px-3 py-2 flex items-center space-x-3 ${
-                    index === selectedCommandIndex ? 'bg-gray-700' : 'hover:bg-gray-700'
-                  }`}
-                  onClick={() => executeCommand(command)}
-                >
-                  <div className="w-8 h-8 rounded-md bg-gray-700 flex items-center justify-center text-sm font-medium">
-                    {command.icon}
-                  </div>
-                  <div className="flex-1 min-w-0">
-                    <div className="text-sm font-medium text-white truncate">{command.title}</div>
-                    <div className="text-xs text-gray-400 truncate">{command.description}</div>
-                  </div>
-                </button>
-              ))}
-            </div>
-          </div>
-        </div>
-      )}
-      {/* Title header removed as requested */}
+      <EditorBubbleMenu />
       
-      <div style={{ flex: '1 1 auto', display: 'flex', flexDirection: 'column', height: '100%' }}>
-        {editor && (
-          <BubbleMenu 
-            editor={editor} 
-            tippyOptions={{ duration: 100, theme: 'dark' }}
-            className="bg-gray-800 p-1 rounded shadow-lg flex space-x-1"
-          >
-            <button
-              onClick={() => editor.chain().focus().toggleBold().run()}
-              className={`p-1 px-2 rounded ${editor.isActive('bold') ? 'bg-gray-700' : 'hover:bg-gray-700'}`}
-              title="Bold"
-            >
-              B
-            </button>
-            <button
-              onClick={() => editor.chain().focus().toggleItalic().run()}
-              className={`p-1 px-2 rounded ${editor.isActive('italic') ? 'bg-gray-700' : 'hover:bg-gray-700'}`}
-              title="Italic"
-            >
-              I
-            </button>
-            <button
-              onClick={() => editor.chain().focus().toggleCode().run()}
-              className={`p-1 px-2 rounded ${editor.isActive('code') ? 'bg-gray-700' : 'hover:bg-gray-700'}`}
-              title="Code"
-            >
-              &lt;&gt;
-            </button>
-          </BubbleMenu>
-        )}
-        {/* EditorContent is now directly inside the scrollable, padded, flex-1 container */}
-        <EditorContent 
-          editor={editor} 
-          onBlur={() => setEditorMode('reading')}
-          style={{
-            height: '100%',
-            width: '100%',
-            flex: '1 1 auto',
-            overflow: 'auto',
-            textAlign: 'left',
-            margin: '0',
-            pointerEvents: 'auto',
-            cursor: editorMode === 'editing' ? 'text' : 'default',
-            '--tw-prose-body': 'var(--color-text)',
-            '--tw-prose-headings': 'var(--color-text)',
-            '--tw-prose-links': 'var(--color-primary)',
-            '--tw-prose-code': 'var(--color-text)',
-            '--tw-prose-code-bg': 'var(--color-surface)',
-            '--tw-prose-hr': 'var(--color-border)',
-            '--tw-prose-quote-borders': 'var(--color-border)',
-            '--tw-prose-quotes': 'var(--color-text-secondary)',
-            '--tw-prose-pre-bg': 'var(--color-surface)',
-            '--tw-prose-pre-code': 'var(--color-text)',
-          } as React.CSSProperties}
-        />
-      </div>
+      <EditorContent 
+        editor={editorInstance} 
+        style={{
+          height: '100%',
+          width: '100%',
+          flex: '1 1 auto',
+          overflow: 'auto',
+          textAlign: 'left',
+          margin: '0',
+          pointerEvents: 'auto',
+          cursor: editorMode === 'editing' ? 'text' : 'default',
+          '--tw-prose-body': 'var(--color-text)',
+          '--tw-prose-headings': 'var(--color-text)',
+          '--tw-prose-links': 'var(--color-primary)',
+          '--tw-prose-code': 'var(--color-text)',
+          '--tw-prose-code-bg': 'var(--color-surface)',
+          '--tw-prose-hr': 'var(--color-border)',
+          '--tw-prose-quote-borders': 'var(--color-border)',
+          '--tw-prose-quotes': 'var(--color-text-secondary)',
+          '--tw-prose-pre-bg': 'var(--color-surface)',
+          '--tw-prose-pre-code': 'var(--color-text)',
+        } as React.CSSProperties}
+      />
     </div>
   );
 };

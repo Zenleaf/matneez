@@ -8,7 +8,7 @@ import { extractTitleFromContent } from './utils/noteUtils';
 // Components
 import Navbar from './components/Navbar';
 import Sidebar from './components/Sidebar';
-import { Editor } from './components/Editor.fp';
+import Editor from './components/Editor.fp';
 import SyncStatus from './components/SyncStatus';
 
 // Services
@@ -89,38 +89,33 @@ const App: React.FC = () => {
     };
   }, [selectedNoteId]);
   
-  // Effect to update selected note when notes change
+  // Effect to update selected note when notes change - prevent infinite loop
   useEffect(() => {
-    console.log('Effect running with selectedNoteId:', selectedNoteId);
-    console.log('Notes count:', notes.length);
-    
     if (selectedNoteId && notes.length > 0) {
       // Check if the selected note still exists
       const noteExists = notes.some(note => String(note._id) === String(selectedNoteId));
-      console.log('Selected note exists in list:', noteExists);
       
       if (!noteExists) {
         // If not, select the first note
-        console.log('Selecting first note as fallback:', notes[0]._id);
-        setSelectedNoteId(String(notes[0]._id));
-        // Update current note title
+        const firstNoteId = String(notes[0]._id);
+        setSelectedNoteId(firstNoteId);
         setCurrentNoteTitle(notes[0].title || 'Untitled Note');
       } else {
-        // Find the selected note and update the title
+        // Find the selected note and update the title only if it's different
         const selectedNote = notes.find(note => String(note._id) === String(selectedNoteId));
         if (selectedNote) {
-          console.log('Found selected note, updating title:', selectedNote.title);
-          setCurrentNoteTitle(selectedNote.title || 'Untitled Note');
+          const newTitle = selectedNote.title || 'Untitled Note';
+          // Use a functional update to avoid reading currentNoteTitle in deps
+          setCurrentNoteTitle(prevTitle => prevTitle !== newTitle ? newTitle : prevTitle);
         }
       }
     } else if (!selectedNoteId && notes.length > 0) {
       // If no note is selected but we have notes, select the first one
-      console.log('No note selected, selecting first note:', notes[0]._id);
-      setSelectedNoteId(String(notes[0]._id));
-      // Update current note title
+      const firstNoteId = String(notes[0]._id);
+      setSelectedNoteId(firstNoteId);
       setCurrentNoteTitle(notes[0].title || 'Untitled Note');
     }
-  }, [notes, selectedNoteId]);
+  }, [notes, selectedNoteId]); // Remove currentNoteTitle from deps to prevent loop
   
   
   // Load notes and subscribe to changes
@@ -153,20 +148,17 @@ const App: React.FC = () => {
           
           // If no note is selected but we have notes, select the first one
           if (!selectedNoteId && loadedNotes.length > 0) {
-            console.log('Setting initial selected note ID:', loadedNotes[0]._id);
             setSelectedNoteId(String(loadedNotes[0]._id));
           }
           
           // Mark notes as loaded
           setNotesLoaded(true);
         } else {
-          console.error('Failed to load notes:', result.left);
           // Even if there's an error, we should still mark notes as "loaded"
           // to prevent infinite loading state
           setNotesLoaded(true);
         }
       } catch (error) {
-        console.error('Error loading notes:', error);
         // Even in case of exception, mark notes as loaded
         setNotesLoaded(true);
       }
@@ -251,7 +243,6 @@ const App: React.FC = () => {
             },
             {
               onStatusChange: (status) => {
-                console.log('Sync status changed:', status);
                 setAppState(prev => ({
                   ...prev,
                   dbStatus: {
@@ -334,8 +325,6 @@ const App: React.FC = () => {
   if (!db || !notesService) {
     return <div>Error: Failed to initialize database</div>;
   }
-
-  console.log('App.tsx render: selectedNoteId is', selectedNoteId);
 
   return (
     <>

@@ -51,6 +51,8 @@ export const createLocalDb = <T extends Record<string, any>>(
     })),
     
     // Create an index for querying
+    // Note: PouchDB Find plugin may show deprecation warnings for db.type() 
+    // This is a known issue with the plugin itself, not our code
     createIndex: (options: {
       index: {
         fields: string[];
