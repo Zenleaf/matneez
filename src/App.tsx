@@ -279,6 +279,13 @@ const App: React.FC = () => {
             syncActive: false
           }
         });
+        
+        // Expose the notesService globally so Editor can access it
+        (window as any).cogneezAppState = {
+          notesService,
+          db,
+          syncService
+        };
       } catch (error) {
         console.error('Failed to initialize app:', error);
         setAppState(prev => ({

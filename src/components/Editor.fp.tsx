@@ -8,6 +8,7 @@ import * as E from 'fp-ts/Either';
 import * as F from 'fp-ts/function';
 import { extractTitleFromContent } from '../utils/noteUtils';
 import { EditorBubbleMenu } from './EditorBubbleMenu';
+import { NoteDocument } from '../types/note';
 import {
   editorModeAtom,
   editorTitleAtom,
@@ -16,8 +17,7 @@ import {
   editorIsSavingAtom,
   editorInstanceAtom,
   createDatabaseServiceAtom,
-  currentNoteIdAtom,
-  commandMenuAtom
+  currentNoteIdAtom
 } from '../state/atoms';
 
 import '../editor.css';
@@ -27,7 +27,6 @@ import ReactDOM from 'react-dom';
 import TaskList from '@tiptap/extension-task-list';
 import TaskItem from '@tiptap/extension-task-item';
 import { Database } from '../services/database/db.fp';
-import { NoteDocument } from '../types/note';
 import { createNotesServiceFp } from '../services/database/notes';
 import Underline from '@tiptap/extension-underline';
 import Image from '@tiptap/extension-image';
@@ -66,7 +65,7 @@ const Editor: React.FC<EditorProps> = ({
   const [isSaving, setIsSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [lastSaved, setLastSaved] = useState<Date | null>(null);
-  const db = useRef<any>(null);
+  const notesService = useRef<any>(null);
   const lastSavedContent = useRef<string>('');
   const lastSavedRevRef = useRef<string>('');
   const isApplyingRemoteUpdate = useRef(false);
@@ -85,18 +84,35 @@ const Editor: React.FC<EditorProps> = ({
   const [editorAtom, setEditorAtom] = useAtom(editorInstanceAtom);
   const [dbAtom] = useAtom(createDatabaseServiceAtom);
   const [currentNoteId, setCurrentNoteId] = useAtom(currentNoteIdAtom);
-  const [commandMenu, setCommandMenu] = useAtom(commandMenuAtom);
 
-  // Ensure db is initialized properly
+  // Get the global notes service instead of creating our own database
   useEffect(() => {
-    if (!db.current) {
+    // Access the global notes service that was created in App.tsx
+    const globalAppState = (window as any).cogneezAppState;
+    if (globalAppState && globalAppState.notesService) {
+      notesService.current = globalAppState.notesService;
+    } else {
+      console.warn('Global notes service not available - creating fallback');
+      // Fallback to creating our own service if global one isn't available
       const PouchDB = (window as any).PouchDB;
-      if (!PouchDB) {
-        console.error('PouchDB is not loaded');
-        setError('PouchDB is not available');
-        return;
+      if (PouchDB) {
+        const rawDb = new PouchDB('notes');
+        notesService.current = {
+          get: (id: string) => TE.tryCatch(
+            () => rawDb.get(id), 
+            (e) => e as Error
+          ),
+          update: (id: string, updates: any) => TE.tryCatch(
+            () => {
+              return rawDb.get(id).then((doc: any) => {
+                const updated = { ...doc, ...updates, updatedAt: new Date().toISOString() };
+                return rawDb.put(updated).then(() => updated);
+              });
+            },
+            (e) => e as Error
+          )
+        };
       }
-      db.current = createDb(new PouchDB('notes'));
     }
     
     // Cleanup function
@@ -107,9 +123,37 @@ const Editor: React.FC<EditorProps> = ({
     };
   }, []);
 
-  // Simple promise-based saveNote to avoid fp-ts complexity
+  const extractTitleFromContent = (html: string): string => {
+    const tempDiv = document.createElement('div');
+    tempDiv.innerHTML = html;
+    
+    // Try to find a heading first
+    const firstHeading = tempDiv.querySelector('h1, h2, h3, h4, h5, h6');
+    if (firstHeading && firstHeading.textContent?.trim()) {
+      return firstHeading.textContent.trim().substring(0, 100); // Limit to 100 chars
+    }
+    
+    // If no heading, try to get first paragraph
+    const firstParagraph = tempDiv.querySelector('p');
+    if (firstParagraph && firstParagraph.textContent?.trim()) {
+      return firstParagraph.textContent.trim().substring(0, 50) + '...'; // Limit to 50 chars with ellipsis
+    }
+    
+    // If no paragraph, get any text content
+    const textContent = tempDiv.textContent?.trim();
+    if (textContent) {
+      return textContent.substring(0, 50) + '...'; // Limit to 50 chars with ellipsis
+    }
+    
+    return 'Untitled Note';
+  };
+
+  // Updated saveNote function to use the global notes service
   const saveNote = useCallback(async (html: string) => {
-    if (!noteId || !db.current) return;
+    if (!noteId || !notesService.current) {
+      console.warn('Cannot save: missing noteId or notesService');
+      return;
+    }
     
     // Debounce saves to prevent excessive calls
     if (debounceTimeoutRef.current) {
@@ -119,67 +163,40 @@ const Editor: React.FC<EditorProps> = ({
     debounceTimeoutRef.current = window.setTimeout(async () => {
       try {
         setIsSaving(true);
+        console.log('🔄 Saving note:', noteId);
         
-        // Use direct PouchDB calls instead of fp-ts TaskEither
-        try {
-          // First try to get the document to get current revision
-          const existingDoc = await db.current.get(noteId);
-          
-          // Update the existing document
-          const updatedDoc = await db.current.put({
-            ...existingDoc,
-            content: html,
-            title: title || 'Untitled Note',
-            updatedAt: new Date().toISOString()
-          });
-          
-          lastSavedContent.current = html;
-          lastSavedRevRef.current = updatedDoc.rev;
+        // Extract title from the current editor content
+        const extractedTitle = extractTitleFromContent(html) || 'Untitled Note';
+        setTitle(extractedTitle);
+        
+        // Use the global notes service for consistent storage
+        const updateResult = await notesService.current.update(noteId, {
+          content: html, // Store HTML directly as the App expects it
+          title: extractedTitle
+        })();
+        
+        if (E.isRight(updateResult)) {
           setLastSaved(new Date());
-          setError(null);
+          lastSavedContent.current = html;
+          console.log('✅ Note saved successfully:', noteId);
           
-        } catch (updateError: any) {
-          // If document doesn't exist, create it
-          if (updateError.status === 404 || updateError.name === 'not_found') {
-            try {
-              const newDoc = await db.current.put({
-                _id: noteId,
-                content: html,
-                title: title || 'Untitled Note',
-                type: 'note',
-                createdAt: new Date().toISOString(),
-                updatedAt: new Date().toISOString()
-              });
-              
-              lastSavedContent.current = html;
-              lastSavedRevRef.current = newDoc.rev;
-              setLastSaved(new Date());
-              setError(null);
-              
-            } catch (createError) {
-              setError('Failed to save note');
-              console.error('Error creating note:', createError);
-            }
-          } else {
-            setError('Failed to save note');
-            console.error('Error updating note:', updateError);
-          }
+          // Dispatch title change event for the navbar
+          const event = new CustomEvent('cogneez:note:title', { 
+            detail: { noteId, title: extractedTitle } 
+          });
+          document.dispatchEvent(event);
+        } else {
+          console.error('❌ Failed to save note:', updateResult.left);
+          setError(`Failed to save: ${updateResult.left.message}`);
         }
-      } catch (error) {
-        setError('Failed to save note');
-        console.error('Error in saveNote:', error);
+      } catch (err) {
+        console.error('❌ Save error:', err);
+        setError(`Save error: ${err instanceof Error ? err.message : 'Unknown error'}`);
       } finally {
         setIsSaving(false);
       }
     }, 500); // 500ms debounce
-  }, [noteId, title, db]);
-
-  const extractTitleFromContent = (html: string): string => {
-    const tempDiv = document.createElement('div');
-    tempDiv.innerHTML = html;
-    const firstHeading = tempDiv.querySelector('h1, h2, h3');
-    return firstHeading ? firstHeading.textContent || '' : '';
-  };
+  }, [noteId]);
 
   const editorInstance = useEditor({
     extensions: [
@@ -215,19 +232,21 @@ const Editor: React.FC<EditorProps> = ({
       Placeholder.configure({
         placeholder: 'Type / for commands...',
       }),
-                BackslashMenuWorking,
+      BackslashMenuWorking,
     ],
     content: content,
     onUpdate: ({ editor }) => {
       const html = editor.getHTML();
       setContent(html);
+      // Auto-save on every update with debouncing handled in saveNote
       saveNote(html);
-      const title = extractTitleFromContent(html);
-      if (title) {
-        setTitleAtom(title);
-        if (onTitleChange) {
-          onTitleChange(title);
-        }
+      
+      // Update title
+      const extractedTitle = extractTitleFromContent(html) || 'Untitled Note';
+      setTitle(extractedTitle);
+      setTitleAtom(extractedTitle);
+      if (onTitleChange) {
+        onTitleChange(extractedTitle);
       }
     },
     editorProps: {
@@ -260,57 +279,74 @@ const Editor: React.FC<EditorProps> = ({
 
     setCurrentNoteId(noteId);
     const loadNoteData = async () => {
-      if (!db.current) {
+      if (!notesService.current) {
         setErrorAtom('Database not initialized');
         return;
       }
       setErrorAtom(null);
       try {
-        // Use direct PouchDB call instead of fp-ts TaskEither
-        const note = await db.current.get(noteId);
+        // Use the global notes service for consistent loading
+        const noteResult = await notesService.current.get(noteId)();
         
+        if (E.isLeft(noteResult)) {
+          console.error('Note not found or error loading:', noteResult.left);
+          const errorMessage = noteResult.left instanceof Error 
+            ? noteResult.left.message 
+            : 'Unknown error loading note';
+          setErrorAtom(`Failed to load note: ${errorMessage}`);
+          return;
+        }
+        
+        const note = noteResult.right as NoteDocument;
         let extractedTitle = note.title || '';
+        let noteContent = note.content || '';
         
-        if (!extractedTitle && note.content) {
+        // Handle both JSON and HTML content formats
+        if (typeof noteContent === 'string') {
           try {
-            // For now, just use a simple fallback since title extraction is complex
-            extractedTitle = 'Untitled Note';
-          } catch (e) {
-            console.error('Error extracting title from content:', e);
-            extractedTitle = 'Untitled Note';
+            // Try to parse as JSON first (for new format)
+            const parsed = JSON.parse(noteContent);
+            if (parsed && typeof parsed === 'object') {
+              // Convert JSON back to HTML for Tiptap
+              noteContent = '<p></p>'; // Default if conversion fails
+              extractedTitle = extractedTitle || extractTitleFromContent(noteContent);
+            }
+          } catch {
+            // If JSON parsing fails, treat as HTML (legacy format)
+            // noteContent is already a string, no conversion needed
+            extractedTitle = extractedTitle || extractTitleFromContent(noteContent);
           }
+        }
+        
+        if (!extractedTitle) {
+          extractedTitle = extractTitleFromContent(noteContent) || 'Untitled Note';
         }
         
         setTitleAtom(extractedTitle);
         
-        const titleEvent = new CustomEvent('cogneez:note:title', { 
-          detail: { title: extractedTitle, noteId } 
-        });
-        document.dispatchEvent(titleEvent);
-        
-        let contentToSet;
-        try {
-          contentToSet = typeof note.content === 'string' 
-            ? JSON.parse(note.content) 
-            : note.content || { type: 'doc', content: [] };
-        } catch (e) {
-          console.error('Error parsing note content:', e);
-          contentToSet = { type: 'doc', content: [] };
+        if (editorInstance && !isApplyingRemoteUpdate.current) {
+          console.log('🔄 Loading note content into editor');
+          const currentContent = editorInstance.getHTML();
+          if (currentContent !== noteContent) {
+            editorInstance.commands.setContent(noteContent);
+          }
         }
         
-        lastSavedContent.current = JSON.stringify(contentToSet);
+        lastSavedContent.current = noteContent;
+        setContent(noteContent);
+        setTitle(extractedTitle);
         
-        if (editorInstance) {
-          editorInstance.commands.setContent(contentToSet);
-        }
-      } catch (err: any) {
-        setErrorAtom(err.message || 'Failed to load note');
-        console.error('Error in loadNote:', err);
+        // Clear any previous errors
+        setError(null);
+        setErrorAtom(null);
+      } catch (error) {
+        console.error('❌ Error loading note:', error);
+        setErrorAtom(`Error loading note: ${error instanceof Error ? error.message : 'Unknown error'}`);
       }
     };
     
     loadNoteData();
-  }, [noteId, editorInstance, db, setTitleAtom, setErrorAtom, setCurrentNoteId]);
+  }, [noteId, editorInstance, notesService, setTitleAtom, setErrorAtom, setCurrentNoteId]);
 
   // Handle entering edit mode
   const handleEnterEditMode = useCallback((position?: { x: number, y: number }) => {
@@ -368,71 +404,56 @@ const Editor: React.FC<EditorProps> = ({
     };
   }, [editorInstance, setEditorMode]);
 
-  // Set up PouchDB changes feed
+  // Listen for external note changes via custom events (App.tsx handles the database changes)
   useEffect(() => {
     if (!noteId || !editorInstance) return;
-    if (!db.current) return;
-    const changes = db.current.changes({
-      since: 'now',
-      live: true,
-      include_docs: true,
-      doc_ids: [noteId],
-      conflicts: true
-    });
     
-    let lastChangeTime = 0;
-    const MIN_CHANGE_INTERVAL = 50;
-    
-    changes.on('change', async (change: any) => {
-      if (!change.doc || isApplyingRemoteUpdate.current) return;
-      
-      const now = Date.now();
-      if (now - lastChangeTime < MIN_CHANGE_INTERVAL) return;
-      lastChangeTime = now;
-      
-      try {
-        const doc = change.doc;
+    const handleDocChange = () => {
+      // Reload the current note when external changes are detected
+      const loadNoteData = async () => {
+        if (!notesService.current) return;
         
-        if (lastSavedRevRef.current === doc._rev) {
-          lastSavedRevRef.current = '';
-          return;
-        }
-        
-        requestAnimationFrame(() => {
-          try {
-            const currentContent = editorInstance.getJSON();
+        try {
+          const noteResult = await notesService.current.get(noteId)();
+          
+          if (E.isRight(noteResult)) {
+            const note = noteResult.right as NoteDocument;
+            let noteContent = note.content || '';
             
-            let remoteContent;
-            try {
-              remoteContent = typeof doc.content === 'string' 
-                ? JSON.parse(doc.content)
-                : doc.content;
-              
-              if (JSON.stringify(currentContent) !== JSON.stringify(remoteContent)) {
-                isApplyingRemoteUpdate.current = true;
-                editorInstance.commands.setContent(remoteContent);
-                lastSavedContent.current = JSON.stringify(remoteContent);
+            // Handle both JSON and HTML content formats
+            if (typeof noteContent === 'string') {
+              try {
+                const parsed = JSON.parse(noteContent);
+                if (parsed && typeof parsed === 'object') {
+                  noteContent = '<p></p>'; // Default if conversion fails
+                }
+              } catch {
+                // If JSON parsing fails, treat as HTML (legacy format)
               }
-            } catch (e) {
-              console.error('Error parsing remote content:', e);
-              return;
             }
-          } finally {
-            isApplyingRemoteUpdate.current = false;
+            
+            const currentContent = editorInstance.getHTML();
+            if (currentContent !== noteContent) {
+              console.log('🔄 Applying external change to editor');
+              editorInstance.commands.setContent(noteContent);
+              lastSavedContent.current = noteContent;
+            }
           }
-        });
-      } catch (error) {
-        console.error('Error applying remote update:', error);
-        isApplyingRemoteUpdate.current = false;
-      }
-    });
+        } catch (error) {
+          console.error('❌ Error loading external change:', error);
+        }
+      };
+      
+      loadNoteData();
+    };
+    
+    // Listen for the custom event dispatched by App.tsx when notes change
+    document.addEventListener('cogneez:doc:change', handleDocChange);
     
     return () => {
-      if (changes && typeof changes.cancel === 'function') {
-        changes.cancel();
-      }
+      document.removeEventListener('cogneez:doc:change', handleDocChange);
     };
-  }, [noteId, editorInstance, db]);
+  }, [noteId, editorInstance, notesService]);
 
   return (
     <div 
